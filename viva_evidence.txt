@@ -1,0 +1,7 @@
+NAME                                    IMAGE                      COMMAND                  SERVICE             CREATED         STATUS                   PORTS
+async-log-audit-pipeline-log-worker-1   log-worker:latest          "python worker.py"       log-worker          9 minutes ago   Up 8 minutes             
+log-ingestion-api                       log-ingestion-api:latest   "uvicorn app.main:ap…"   log-ingestion-api   9 minutes ago   Up 8 minutes (healthy)   0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp
+mongodb                                 mongo:7.0                  "docker-entrypoint.s…"   mongodb             9 minutes ago   Up 9 minutes (healthy)   127.0.0.1:27017->27017/tcp
+object-storage                          pgsty/minio:latest         "/usr/bin/docker-ent…"   object-storage      9 minutes ago   Up 9 minutes             127.0.0.1:9000-9001->9000-9001/tcp
+rabbitmq                                rabbitmq:3.12-management   "docker-entrypoint.s…"   rabbitmq            9 minutes ago   Up 8 minutes (healthy)   127.0.0.1:5672->5672/tcp, 127.0.0.1:15672->15672/tcp
+sms-frontend                            sms-frontend:latest        "/docker-entrypoint.…"   sms-frontend        9 minutes ago   Up 9 minutes (healthy)   0.0.0.0:8081->80/tcp, [::]:8081->80/tcp
