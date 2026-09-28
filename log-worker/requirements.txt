@@ -1,3 +1,4 @@
 pika
-pymongo
 python-dotenv
+pymongo
+boto3
