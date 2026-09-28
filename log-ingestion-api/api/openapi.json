@@ -1,0 +1,680 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Log Ingestion API",
+    "description": "Front-door ingestion service for the Asynchronous Distributed Log & Audit Analytics Pipeline (CS32102). Validates and accepts log uploads, stores raw files in S3/MinIO, creates pending records in MongoDB, publishes jobs to RabbitMQ, and provides query interfaces for status, history, and metrics.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Service Liveness Probe",
+        "description": "Returns HTTP 200 with status 'ok' if the API service is up and responsive. Does not check downstream dependencies.",
+        "operationId": "get_health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/logs/upload": {
+      "post": {
+        "tags": [
+          "Logs"
+        ],
+        "summary": "Upload Raw Log File",
+        "description": "Validates, streams, and uploads a log file (.json, .jsonl, .json.gz, .jsonl.gz) to object storage, registers a pending job in MongoDB, and enqueues a processing message to RabbitMQ for the Worker.",
+        "operationId": "upload_logs_logs_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_logs_logs_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "File accepted, persisted, and queued for processing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid file content, invalid extension, empty file, or unsafe service_name."
+          },
+          "413": {
+            "description": "File exceeds maximum upload size (MAX_UPLOAD_BYTES)."
+          },
+          "422": {
+            "description": "Missing required field (such as service_name) or unprocessable entity."
+          },
+          "503": {
+            "description": "Infrastructure failure (Storage, Database, or Message Queue unavailable)."
+          }
+        }
+      }
+    },
+    "/logs/status": {
+      "get": {
+        "tags": [
+          "Logs"
+        ],
+        "summary": "Get Ingestion Job Status",
+        "description": "Retrieves the full ingestion record for a given ingest_id. Never returns MongoDB internal '_id'.",
+        "operationId": "get_log_status_logs_status_get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Unique UUIDv4 ingest_id of the ingestion job",
+              "title": "Id"
+            },
+            "description": "Unique UUIDv4 ingest_id of the ingestion job"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Full ingestion record found and returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogRecord"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ingestion job record not found."
+          },
+          "503": {
+            "description": "Database infrastructure is unavailable."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/logs": {
+      "get": {
+        "tags": [
+          "Logs"
+        ],
+        "summary": "List Ingestion Records",
+        "description": "Lists log ingestion records sorted by created_at in descending order (newest first). Supports filtering and pagination.",
+        "operationId": "list_logs_logs_get",
+        "parameters": [
+          {
+            "name": "service_name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by service name",
+              "title": "Service Name"
+            },
+            "description": "Filter by service name"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by status (pending, processing, completed, failed)",
+              "title": "Status"
+            },
+            "description": "Filter by status (pending, processing, completed, failed)"
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by environment (dev, staging, prod)",
+              "title": "Environment"
+            },
+            "description": "Filter by environment (dev, staging, prod)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Maximum number of records to return (1-200, default 50)",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Maximum number of records to return (1-200, default 50)"
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of records to skip for pagination (default 0)",
+              "default": 0,
+              "title": "Skip"
+            },
+            "description": "Number of records to skip for pagination (default 0)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of ingestion records.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LogRecord"
+                  },
+                  "title": "Response List Logs Logs Get"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database infrastructure is unavailable."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics/summary": {
+      "get": {
+        "tags": [
+          "Metrics"
+        ],
+        "summary": "Get Aggregated Service Metrics Summary",
+        "description": "Returns a list of aggregated metric summaries grouped by service_name for all 'completed' ingestion records. Sums the Worker's recorded counters: total_logs, error_count, warning_count, and critical_count.\n\n### Operational Health Evaluation Rule:\n- **critical**: If `critical_count > 0`\n- **degraded**: Else if `error_count > 0`\n- **healthy**: If `critical_count == 0` and `error_count == 0`",
+        "operationId": "get_metrics_summary_metrics_summary_get",
+        "parameters": [
+          {
+            "name": "service_name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional filter for specific service name",
+              "title": "Service Name"
+            },
+            "description": "Optional filter for specific service name"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional ISO 8601 start timestamp (filter on created_at >= from)",
+              "title": "From"
+            },
+            "description": "Optional ISO 8601 start timestamp (filter on created_at >= from)"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional ISO 8601 end timestamp (filter on created_at <= to)",
+              "title": "To"
+            },
+            "description": "Optional ISO 8601 end timestamp (filter on created_at <= to)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of aggregated metrics per service with computed health.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ServiceMetricsSummary"
+                  },
+                  "title": "Response Get Metrics Summary Metrics Summary Get"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database infrastructure is unavailable."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_upload_logs_logs_upload_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "description": "Multipart raw log file (.json, .jsonl, .json.gz, .jsonl.gz)"
+          },
+          "service_name": {
+            "type": "string",
+            "title": "Service Name",
+            "description": "Identifier of the service generating the logs (letters, digits, '-', '_')"
+          },
+          "environment": {
+            "type": "string",
+            "title": "Environment",
+            "description": "Deployment environment (default: 'dev')",
+            "default": "dev"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file",
+          "service_name"
+        ],
+        "title": "Body_upload_logs_logs_upload_post"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Health status of the API service",
+            "example": "ok"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "HealthResponse",
+        "description": "Liveness probe response model."
+      },
+      "LogRecord": {
+        "properties": {
+          "ingest_id": {
+            "type": "string",
+            "title": "Ingest Id",
+            "description": "Unique UUIDv4 identifier for the ingestion job",
+            "example": "c7a8e8b0-4dbb-4fd5-8889-bf8d4076722c"
+          },
+          "service_name": {
+            "type": "string",
+            "title": "Service Name",
+            "description": "Originating service name for the log file",
+            "example": "api-gateway"
+          },
+          "environment": {
+            "type": "string",
+            "title": "Environment",
+            "description": "Deployment environment (e.g., dev, staging, prod)",
+            "example": "dev"
+          },
+          "object_key": {
+            "type": "string",
+            "title": "Object Key",
+            "description": "Storage key for the raw log file in S3 / MinIO",
+            "example": "raw-logs/api-gateway-c7a8e8b0-4dbb-4fd5-8889-bf8d4076722c.jsonl"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Current lifecycle state (pending, processing, completed, failed)",
+            "example": "pending"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics",
+            "description": "Aggregated log level counters computed by the worker",
+            "example": {
+              "critical_count": 0,
+              "debug_count": 3,
+              "error_count": 5,
+              "info_count": 100,
+              "other_count": 0,
+              "total_logs": 120,
+              "warning_count": 12
+            }
+          },
+          "top_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Error",
+            "description": "Most frequent normalized error message encountered during processing",
+            "example": "Connection refused to database host"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report",
+            "description": "Detailed analytics report including health rating, top warnings, sources, and rule findings",
+            "example": {
+              "findings": [],
+              "health": "degraded",
+              "skipped_lines": 0,
+              "time_range": {
+                "first": "2026-09-26T14:40:00Z",
+                "last": "2026-09-26T15:00:00Z"
+              },
+              "top_errors": [
+                {
+                  "count": 5,
+                  "message": "Connection refused"
+                }
+              ],
+              "top_sources": [
+                {
+                  "count": 120,
+                  "logger": "com.se_project.api_gateway"
+                }
+              ],
+              "top_warnings": []
+            }
+          },
+          "error_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Reason",
+            "description": "Reason for job failure if status is 'failed'"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "UTC timestamp when the upload was registered",
+            "example": "2026-09-28T16:30:00Z"
+          },
+          "processed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processed At",
+            "description": "UTC timestamp when the worker finalized processing"
+          },
+          "processing_started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Started At",
+            "description": "UTC timestamp when the worker picked up the job"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ingest_id",
+          "service_name",
+          "environment",
+          "object_key",
+          "status",
+          "created_at"
+        ],
+        "title": "LogRecord",
+        "description": "Complete ingestion job record stored in MongoDB.\nNullable fields accommodate the asynchronous worker lifecycle,\nas metrics, reports, and error details are populated post-processing."
+      },
+      "ServiceMetricsSummary": {
+        "properties": {
+          "service_name": {
+            "type": "string",
+            "title": "Service Name",
+            "description": "Name of the service",
+            "example": "api-gateway"
+          },
+          "total_logs": {
+            "type": "integer",
+            "title": "Total Logs",
+            "description": "Cumulative count of all parsed log entries for this service",
+            "example": 1450
+          },
+          "error_count": {
+            "type": "integer",
+            "title": "Error Count",
+            "description": "Cumulative count of ERROR level logs for this service",
+            "example": 12
+          },
+          "warning_count": {
+            "type": "integer",
+            "title": "Warning Count",
+            "description": "Cumulative count of WARN/WARNING level logs for this service",
+            "example": 45
+          },
+          "critical_count": {
+            "type": "integer",
+            "title": "Critical Count",
+            "description": "Cumulative count of CRITICAL/FATAL level logs for this service",
+            "example": 0
+          },
+          "health": {
+            "type": "string",
+            "title": "Health",
+            "description": "Computed operational health: 'critical' if critical_count > 0, else 'degraded' if error_count > 0, else 'healthy'",
+            "example": "degraded"
+          }
+        },
+        "type": "object",
+        "required": [
+          "service_name",
+          "total_logs",
+          "error_count",
+          "warning_count",
+          "critical_count",
+          "health"
+        ],
+        "title": "ServiceMetricsSummary",
+        "description": "Aggregated health and count metrics for a single service across all completed ingestions."
+      },
+      "UploadResponse": {
+        "properties": {
+          "ingest_id": {
+            "type": "string",
+            "title": "Ingest Id",
+            "description": "Unique UUIDv4 identifier assigned to this ingestion job",
+            "example": "c7a8e8b0-4dbb-4fd5-8889-bf8d4076722c"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Initial lifecycle status of the ingestion job",
+            "default": "pending",
+            "example": "pending"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ingest_id"
+        ],
+        "title": "UploadResponse",
+        "description": "Response returned upon successful acceptance and queuing of a log file."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
