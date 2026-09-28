@@ -863,29 +863,140 @@ def render_top_errors_table(summary: list[dict]) -> None:
 
 
 def render_batch_detail(rec: dict) -> None:
-    """Render detailed lookup card for a specific batch query."""
+    """Render comprehensive detailed record report for an ingestion batch."""
+    if not rec:
+        st.warning("No record details provided.")
+        return
+
+    ingest_id = rec.get("ingest_id", "-")
     status = rec.get("status", "unknown")
-    metrics = rec.get("metrics") or {}
-    ingest_id = rec.get("ingest_id", "")
+    service_name = rec.get("service_name", "-")
+    environment = rec.get("environment", "-")
+    object_key = rec.get("object_key", "-")
     created = rec.get("created_at") or "-"
+    started = rec.get("processing_started_at") or "-"
     processed = rec.get("processed_at") or "-"
     err_reason = rec.get("error_reason")
+    top_error = rec.get("top_error")
+    metrics = rec.get("metrics") or {}
+    report = rec.get("report") or {}
 
-    st.markdown(f"**Batch status:** {render_status_badge(status)}", unsafe_allow_html=True)
+    health = report.get("health") or ("failed" if status == "failed" else "pending")
+
+    # 1. Header & Stepper
+    st.markdown(f"### Ingestion Report: `{ingest_id}`")
     render_pipeline_stepper(status)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total records", f"{metrics.get('total_logs', 0):,}" if metrics else "-")
-    c2.metric("Errors", f"{metrics.get('error_count', 0):,}" if metrics else "-")
+    # 2. Key Metadata Columns
+    m1, m2, m3, m4 = st.columns(4)
+    m1.markdown(f"**Service:** `{service_name}`")
+    m2.markdown(f"**Environment:** `{environment}`")
+    m3.markdown(f"**Status:** {render_status_badge(status)}", unsafe_allow_html=True)
+    if health and health != "pending":
+        h_badge_class = f"badge-{health.lower()}"
+        m4.markdown(f"**Health:** <span class='badge {h_badge_class}'>{health.capitalize()}</span>", unsafe_allow_html=True)
+    else:
+        m4.markdown(f"**Health:** `{health.capitalize()}`")
+
+    # 3. Metrics Summary Cards
+    st.markdown("#### Summary Metrics")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Logs", f"{metrics.get('total_logs', 0):,}" if metrics else "-")
+    c2.metric("Info Logs", f"{metrics.get('info_count', 0):,}" if metrics else "-")
     c3.metric("Warnings", f"{metrics.get('warning_count', 0):,}" if metrics else "-")
-    c4.metric("Critical", f"{metrics.get('critical_count', 0):,}" if metrics else "-")
+    c4.metric("Errors", f"{metrics.get('error_count', 0):,}" if metrics else "-")
+    c5.metric("Critical", f"{metrics.get('critical_count', 0):,}" if metrics else "-")
 
-    t1, t2 = st.columns(2)
-    t1.caption(f"Created (UTC): {created}")
-    t2.caption(f"Processed (UTC): {processed}")
+    # Timestamps & Storage path
+    st.caption(f"**Created:** {created} | **Started:** {started} | **Processed:** {processed}")
+    st.caption(f"**Object Key (MinIO/S3):** `{object_key}`")
 
+    # 4. Error Reason / Top Error Highlighting
     if err_reason:
-        st.error(f"Failure reason: {err_reason}")
+        st.error(f"**Pipeline Failure Reason:** {err_reason}")
+
+    if top_error:
+        st.warning(f"**Top Frequent Error:** {top_error}")
+
+    # 5. Rule Findings (if any)
+    findings = report.get("findings") or []
+    if findings:
+        st.markdown("#### Audit Rule Findings & Diagnostics")
+        for f in findings:
+            f_title = f.get("title", f.get("id", "Finding"))
+            f_sev = f.get("severity", "warning").lower()
+            f_count = f.get("count", 1)
+            f_hint = f.get("hint", "")
+            f_example = f.get("example", "")
+
+            sev_badge = f'<span class="badge badge-{"critical" if f_sev == "error" else "degraded" if f_sev == "warning" else "completed"}">{f_sev.upper()}</span>'
+
+            with st.container():
+                st.markdown(
+                    f"**{f_title}** ({f_count} occurrence{'s' if f_count != 1 else ''}) {sev_badge}",
+                    unsafe_allow_html=True
+                )
+                if f_hint:
+                    st.info(f"**Diagnostic Hint:** {f_hint}")
+                if f_example:
+                    st.code(f_example, language="text")
+                st.divider()
+
+    # 6. Error Samples & Stack Traces
+    error_samples = report.get("error_samples") or []
+    if error_samples:
+        st.markdown("#### Error Samples & Stack Traces")
+        for idx, sample in enumerate(error_samples, start=1):
+            ts = sample.get("timestamp", "-")
+            logger_name = sample.get("logger", "-")
+            msg = sample.get("message", "-")
+            stack_trace = sample.get("stack_trace_head") or sample.get("stack_trace")
+
+            with st.expander(f"Error Sample #{idx}: [{logger_name}] {msg[:80]}...", expanded=(idx == 1)):
+                st.markdown(f"**Timestamp:** `{ts}`")
+                st.markdown(f"**Logger:** `{logger_name}`")
+                st.markdown(f"**Message:** {msg}")
+                if stack_trace:
+                    st.markdown("**Stack Trace:**")
+                    st.code(stack_trace, language="text")
+
+    # 7. Top Errors & Top Warnings Tables
+    top_errors = report.get("top_errors") or []
+    top_warnings = report.get("top_warnings") or []
+    top_sources = report.get("top_sources") or []
+
+    if top_errors or top_warnings or top_sources:
+        tab_err, tab_warn, tab_src = st.tabs(["Top Errors", "Top Warnings", "Top Loggers"])
+
+        with tab_err:
+            if top_errors:
+                err_df_data = [{"Count": e.get("count", 0), "Message": e.get("message", "")} for e in top_errors]
+                st.dataframe(err_df_data, **get_stretch_kwarg(st.dataframe))
+            else:
+                st.write("No errors recorded.")
+
+        with tab_warn:
+            if top_warnings:
+                warn_df_data = [{"Count": w.get("count", 0), "Message": w.get("message", "")} for w in top_warnings]
+                st.dataframe(warn_df_data, **get_stretch_kwarg(st.dataframe))
+            else:
+                st.write("No warnings recorded.")
+
+        with tab_src:
+            if top_sources:
+                src_df_data = [{"Count": s.get("count", 0), "Logger Source": s.get("logger", "")} for s in top_sources]
+                st.dataframe(src_df_data, **get_stretch_kwarg(st.dataframe))
+            else:
+                st.write("No logger sources recorded.")
+
+    # 8. Time Range & Skipped Lines
+    time_range = report.get("time_range") or {}
+    if time_range:
+        st.caption(f"**Time Window:** First log at `{time_range.get('first', '-')}` | Last log at `{time_range.get('last', '-')}`")
+
+    # 9. Complete Raw Record Viewer
+    with st.expander("View Full Ingestion Document (JSON)", expanded=False):
+        st.json(rec)
 
 
 def render_architecture_stages() -> None:

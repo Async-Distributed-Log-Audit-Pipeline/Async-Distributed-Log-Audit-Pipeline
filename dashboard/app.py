@@ -81,7 +81,7 @@ with st.sidebar:
             if svc_name and svc_name not in available_services:
                 available_services.append(svc_name)
     except Exception:
-        available_services = ["All services", "product-service", "coupon-service", "api-gateway", "auth-service"]
+        available_services = ["All services", "api-gateway", "audit-service", "auth-service", "course-service", "service-registry", "student-service"]
 
     service_filter = st.selectbox(
         "Filter service",
@@ -268,8 +268,12 @@ def render_status() -> None:
         selected_label = st.selectbox("Select batch to inspect lifecycle progression", options)
         selected_idx = options.index(selected_label) if selected_label in options else 0
         selected_record = table_rows[selected_idx]
-
         render_pipeline_stepper(selected_record["status"])
+        try:
+            full_record = api_status(selected_record["ingest_id"])
+            render_batch_detail(full_record)
+        except Exception:
+            render_batch_detail(selected_record)
 
     st.divider()
     st.subheader("Query ingestion by ID")

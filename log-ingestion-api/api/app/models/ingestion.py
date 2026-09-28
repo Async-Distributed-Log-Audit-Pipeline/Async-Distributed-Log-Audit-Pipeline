@@ -154,6 +154,6 @@ class ServiceMetricsSummary(BaseModel):
     )
     health: str = Field(
         ...,
-        description="Computed operational health: 'critical' if critical_count > 0, else 'degraded' if error_count > 0, else 'healthy'",
+        description="Computed operational health: 'critical' if critical_count > 0, else 'degraded' if error_count > 0, else 'warning' if warning_count > 0, else 'healthy'",
         json_schema_extra={"example": "degraded"},
     )
