@@ -167,11 +167,13 @@ class IngestionRepository:
                 tot = int(item.get("total_logs", 0))
 
                 # Operational Health Rule:
-                # 'critical' if critical_count > 0; else 'degraded' if error_count > 0; else 'healthy'
+                # 'critical' if critical_count > 0; else 'degraded' if error_count > 0; else 'warning' if warning_count > 0; else 'healthy'
                 if crit > 0:
                     health = "critical"
                 elif err > 0:
                     health = "degraded"
+                elif warn > 0:
+                    health = "warning"
                 else:
                     health = "healthy"
 

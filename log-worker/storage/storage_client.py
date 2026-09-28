@@ -48,6 +48,33 @@ class ObjectStorageClient:
         except Exception as e:
             raise StorageUnavailableError(f"Failed to initialize S3 client: {e}") from e
 
+    def ensure_bucket_exists(self) -> None:
+        """
+        Verifies that the target bucket exists, creating it if absent.
+        Idempotent and handles existing buckets silently.
+        """
+        try:
+            self.s3_client.head_bucket(Bucket=self.bucket_name)
+        except ClientError as e:
+            error_code = str(e.response.get("Error", {}).get("Code", ""))
+            if error_code in ("404", "NoSuchBucket", "NotFound"):
+                try:
+                    if self.region == "us-east-1":
+                        self.s3_client.create_bucket(Bucket=self.bucket_name)
+                    else:
+                        self.s3_client.create_bucket(
+                            Bucket=self.bucket_name,
+                            CreateBucketConfiguration={"LocationConstraint": self.region},
+                        )
+                except ClientError as create_err:
+                    create_code = str(create_err.response.get("Error", {}).get("Code", ""))
+                    if create_code not in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+                        raise StorageUnavailableError(f"Failed to create bucket: {create_err}") from create_err
+            elif error_code not in ("403", "BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+                raise StorageUnavailableError(f"Error accessing bucket: {e}") from e
+        except (BotoCoreError, Exception) as e:
+            raise StorageUnavailableError(f"Storage service unavailable: {e}") from e
+
     def download_file(self, object_key: str, dest_path: str) -> None:
         """
         Downloads a file from object storage directly to disk without loading it into memory.
@@ -83,8 +110,9 @@ class ObjectStorageClient:
 
     def upload_file(self, file_path: str, object_key: str) -> None:
         """
-        Uploads a local file to object storage.
+        Uploads a local file to object storage. Ensures bucket exists first.
         """
+        self.ensure_bucket_exists()
         try:
             self.s3_client.upload_file(file_path, self.bucket_name, object_key)
         except ClientError as e:

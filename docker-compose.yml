@@ -1,536 +1,228 @@
-# =============================================================================
-# Async Distributed Log & Audit Analytics Pipeline - root orchestration
+# ============================================================
+# Async Distributed Log & Audit Analytics Pipeline
+# Root docker-compose.yml — orchestrates all pipeline services
 #
-#   Default stack (no profile):
-#     rabbitmq, mongodb, object-storage (MinIO)        <- infrastructure
-#     minio-init, db-init                              <- one-shot setup jobs
-#     log-ingestion-api, log-worker                    <- the pipeline
-#     sms-frontend                                     <- log source UI
+# Usage:
+#   docker compose up --build -d
 #
-#   Opt-in stack (--profile sms-backend):
-#     service-registry, api-gateway, auth/student/course/audit services
-#     + their MySQL databases. These Dockerfiles COPY a pre-built JAR, so run
-#     the Maven build first (see the bottom of this file).
-#
-# All values below can be overridden via a root-level `.env` file
-# (copy .env.example -> .env). Every variable has a working default.
-# =============================================================================
-
-name: async-log-audit-pipeline
-
-# ---------------------------------------------------------------------------
-# Shared fragments (YAML anchors)
-# ---------------------------------------------------------------------------
-x-logging: &default-logging
-  driver: json-file
-  options:
-    max-size: "10m"
-    max-file: "3"
-
-# Hostnames/ports are intentionally NOT overridable: they must match the
-# service names on the internal network, otherwise a stray localhost value
-# copied from a service's own .env would break container-to-container calls.
-x-rabbitmq-env: &rabbitmq-env
-  RABBITMQ_HOST: rabbitmq
-  RABBITMQ_PORT: "5672"
-  RABBITMQ_USER: ${RABBITMQ_USER:-guest}
-  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
-  RABBITMQ_QUEUE_NAME: ${RABBITMQ_QUEUE_NAME:-log-ingestion-queue}
-
-x-mongo-env: &mongo-env
-  MONGO_URI: mongodb://mongodb:27017
-  MONGO_DB_NAME: ${MONGO_DB_NAME:-log_analytics}
-  MONGO_COLLECTION: ${MONGO_COLLECTION:-ingestions}
-
-x-s3-env: &s3-env
-  S3_ENDPOINT_URL: http://object-storage:9000
-  S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-  S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-  S3_BUCKET_NAME: ${S3_BUCKET_NAME:-raw-logs}
-  S3_REGION: ${S3_REGION:-us-east-1}
-
-x-mysql: &mysql-base
-  image: mysql:8.0
-  restart: unless-stopped
-  profiles: ["sms-backend"]
-  networks: [sms-net]
-  logging: *default-logging
-  healthcheck:
-    test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
-    interval: 10s
-    timeout: 5s
-    retries: 12
-    start_period: 30s
+# To run TWO log-worker replicas (plain Compose, not Swarm):
+#   docker compose up --build -d --scale log-worker=2
+#   NOTE: The log-worker service has no container_name so Compose
+#         can freely name the replicas when --scale is used.
+# ============================================================
 
 services:
-  # ===========================================================================
-  # INFRASTRUCTURE
-  # ===========================================================================
+
+  # ──────────────────────────────────────────
+  # INFRASTRUCTURE: Message Broker
+  # ──────────────────────────────────────────
   rabbitmq:
     image: rabbitmq:3.12-management
-    container_name: rabbitmq
-    restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
     ports:
-      # Bound to localhost only; the app services use the internal network.
-      - "127.0.0.1:${RABBITMQ_AMQP_PORT:-5672}:5672"
-      - "127.0.0.1:${RABBITMQ_UI_PORT:-15672}:15672"
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # Management UI  →  http://localhost:15672
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
-    networks: [pipeline-net]
-    logging: *default-logging
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
-      timeout: 10s
-      retries: 12
+      timeout: 5s
+      retries: 10
       start_period: 20s
+    restart: unless-stopped
 
+  # ──────────────────────────────────────────
+  # INFRASTRUCTURE: Document Store
+  # ──────────────────────────────────────────
   mongodb:
     image: mongo:7.0
-    container_name: mongodb
-    restart: unless-stopped
     ports:
-      - "127.0.0.1:${MONGO_PORT:-27017}:27017"
+      - "27017:27017"
     volumes:
       - mongodb_data:/data/db
-    networks: [pipeline-net]
-    logging: *default-logging
     healthcheck:
-      test: ["CMD-SHELL", "test \"$$(mongosh --quiet --eval 'db.adminCommand({ping:1}).ok')\" = \"1\""]
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 10s
-      timeout: 10s
-      retries: 12
+      timeout: 5s
+      retries: 10
       start_period: 20s
-
-  object-storage:
-    image: ${MINIO_IMAGE:-pgsty/minio:latest}
-    container_name: object-storage
     restart: unless-stopped
+
+  # ──────────────────────────────────────────
+  # INFRASTRUCTURE: Object Storage (MinIO)
+  # Console UI  →  http://localhost:9001
+  # S3 API      →  http://localhost:9000
+  # ──────────────────────────────────────────
+  minio:
+    image: pgsty/minio:latest
     command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
-      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "9000:9000"   # S3-compatible API
+      - "9001:9001"   # MinIO console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
     volumes:
       - minio_data:/data
-    networks: [pipeline-net]
-    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
 
-  # ===========================================================================
-  # ONE-SHOT SETUP JOBS (run to completion, then exit)
-  # ===========================================================================
-
-  # Creates the raw-logs bucket. Nothing else in the codebase does this at
-  # runtime (the API's ensure_bucket_exists() is never called), so without
-  # this job the first upload fails with NoSuchBucket.
-  # Uses python + boto3 (same S3 client library the API/worker use) instead of
-  # a MinIO client image, so no extra registry/image is needed. The retry loop
-  # also acts as the MinIO readiness gate for dependants.
-  minio-init:
-    image: python:3.11-slim
-    restart: "no"
-    environment:
-      <<: *s3-env
-      PYTHONUNBUFFERED: "1"
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      PIP_ROOT_USER_ACTION: ignore
-    command:
-      - sh
-      - -c
-      - |
-        pip install --no-cache-dir -q boto3 && python - <<'PY'
-        import os, sys, time
-        import boto3
-        from botocore.client import Config
-        from botocore.exceptions import ClientError
-
-        bucket = os.environ["S3_BUCKET_NAME"]
-        region = os.environ["S3_REGION"]
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=os.environ["S3_ENDPOINT_URL"],
-            aws_access_key_id=os.environ["S3_ACCESS_KEY"],
-            aws_secret_access_key=os.environ["S3_SECRET_KEY"],
-            region_name=region,
-            config=Config(
-                s3={"addressing_style": "path"},
-                retries={"max_attempts": 1},
-                connect_timeout=3,
-                read_timeout=5,
-            ),
-        )
-
-        for attempt in range(1, 61):
-            try:
-                try:
-                    s3.head_bucket(Bucket=bucket)
-                    print("bucket '%s' already exists" % bucket)
-                except ClientError as e:
-                    code = str(e.response.get("Error", {}).get("Code"))
-                    if code not in ("404", "NoSuchBucket", "NotFound"):
-                        raise
-                    if region == "us-east-1":
-                        s3.create_bucket(Bucket=bucket)
-                    else:
-                        s3.create_bucket(
-                            Bucket=bucket,
-                            CreateBucketConfiguration={"LocationConstraint": region},
-                        )
-                    print("bucket '%s' created" % bucket)
-                sys.exit(0)
-            except SystemExit:
-                raise
-            except Exception as e:
-                print("waiting for object-storage (attempt %d/60): %s" % (attempt, e))
-                time.sleep(2)
-
-        print("object-storage never became ready", file=sys.stderr)
-        sys.exit(1)
-        PY
-    depends_on:
-      - object-storage
-    networks: [pipeline-net]
-    logging: *default-logging
-
-  # Applies the MongoDB JSON-schema validator and indexes (idempotent).
-  # Uses ./db/setup_schema_and_indexes.py mounted read-only into a stock
-  # Python image, so no Dockerfile is needed for the db/ folder.
+  # ──────────────────────────────────────────
+  # ONE-SHOT INIT: Apply MongoDB schema +
+  # indexes. Exits after completion.
+  # Do NOT add seed_services.py here.
+  # Manual demo seeding:
+  #   docker compose run --rm db-init python seed_services.py
+  # ──────────────────────────────────────────
   db-init:
-    image: python:3.11-slim
-    restart: "no"
-    working_dir: /app
+    build:
+      context: ./db
+      dockerfile: Dockerfile
+    command: ["sh", "-c", "python setup_schema_and_indexes.py && python ensure_bucket.py"]
     environment:
-      <<: *mongo-env
-      PYTHONDONTWRITEBYTECODE: "1"
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      PIP_ROOT_USER_ACTION: ignore
-    volumes:
-      - ./db:/app:ro
-    command:
-      - sh
-      - -c
-      - pip install --no-cache-dir -q "pymongo>=4.6.0,<5.0.0" "python-dotenv>=1.0.0,<2.0.0" && python setup_schema_and_indexes.py
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB_NAME: log_analytics
+      MONGO_COLLECTION: ingestions
+      # MinIO vars are present so seed_services.py works if run manually
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET_NAME: raw-logs
+      S3_REGION: us-east-1
+      # RabbitMQ vars are present so seed_services.py works if run manually
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+      RABBITMQ_QUEUE_NAME: log-ingestion-queue
     depends_on:
       mongodb:
         condition: service_healthy
-    networks: [pipeline-net]
-    logging: *default-logging
+      minio:
+        condition: service_healthy
+    restart: "no"
 
-  # ===========================================================================
-  # LOG PIPELINE
-  # ===========================================================================
+  # ──────────────────────────────────────────
+  # SERVICE: Log Ingestion API (FastAPI)
+  # Swagger UI  →  http://localhost:8000/docs
+  # ──────────────────────────────────────────
   log-ingestion-api:
     build:
       context: ./log-ingestion-api/api
       dockerfile: Dockerfile
-    image: log-ingestion-api:latest
-    container_name: log-ingestion-api
-    restart: unless-stopped
-    environment:
-      <<: [*rabbitmq-env, *mongo-env, *s3-env]
-      PORT: "8000"
-      HOST: 0.0.0.0
-      # Tighten for real deployments, e.g. http://localhost:8081
-      CORS_ORIGINS: ${CORS_ORIGINS:-*}
-      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-10485760}
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "8000:8000"
+    environment:
+      # Server
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      CORS_ORIGINS: "*"
+      MAX_UPLOAD_BYTES: "10485760"
+      # RabbitMQ
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+      RABBITMQ_QUEUE_NAME: log-ingestion-queue
+      # MongoDB
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB_NAME: log_analytics
+      MONGO_COLLECTION: ingestions
+      # MinIO / S3
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET_NAME: raw-logs
+      S3_REGION: us-east-1
     depends_on:
       rabbitmq:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
       db-init:
         condition: service_completed_successfully
-    networks: [pipeline-net]
-    logging: *default-logging
-    healthcheck:
-      # python:3.13-slim ships without curl/wget, so probe with urllib.
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
+    restart: unless-stopped
 
-  # No published ports (pure queue consumer). No container_name so it can be
-  # scaled horizontally:  docker compose up -d --scale log-worker=3
+  # ──────────────────────────────────────────
+  # SERVICE: Log Worker (async processor)
+  # No port exposed; pulls from RabbitMQ queue.
+  #
+  # Scale to 2 replicas:
+  #   docker compose up --build -d --scale log-worker=2
+  # ──────────────────────────────────────────
   log-worker:
     build:
       context: ./log-worker
       dockerfile: Dockerfile
-    image: log-worker:latest
-    restart: unless-stopped
     environment:
-      <<: [*rabbitmq-env, *mongo-env, *s3-env]
-      RABBITMQ_DLQ_NAME: ${RABBITMQ_DLQ_NAME:-log-ingestion-dlq}
-      RABBITMQ_HEARTBEAT: ${RABBITMQ_HEARTBEAT:-600}
-      PREFETCH_COUNT: ${PREFETCH_COUNT:-1}
-      DEBUG_PROCESSING_DELAY_SECONDS: ${DEBUG_PROCESSING_DELAY_SECONDS:-0}
-      MAX_RETRIES: ${MAX_RETRIES:-3}
-      RETRY_BASE_DELAY_SECONDS: ${RETRY_BASE_DELAY_SECONDS:-2}
-      RETRY_MAX_DELAY_SECONDS: ${RETRY_MAX_DELAY_SECONDS:-60}
-      MAX_SKIPPED_RATIO: ${MAX_SKIPPED_RATIO:-0.5}
-      PYTHONUNBUFFERED: "1"
+      # RabbitMQ
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+      RABBITMQ_QUEUE_NAME: log-ingestion-queue
+      RABBITMQ_DLQ_NAME: log-ingestion-dlq
+      RABBITMQ_HEARTBEAT: "600"
+      PREFETCH_COUNT: "1"
+      # MongoDB
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB_NAME: log_analytics
+      MONGO_COLLECTION: ingestions
+      # MinIO / S3
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET_NAME: raw-logs
+      S3_REGION: us-east-1
+      # Worker tuning
+      MAX_RETRIES: "3"
+      RETRY_BASE_DELAY_SECONDS: "2"
+      RETRY_MAX_DELAY_SECONDS: "60"
+      MAX_SKIPPED_RATIO: "0.5"
+      DEBUG_PROCESSING_DELAY_SECONDS: "0"
     depends_on:
       rabbitmq:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
       db-init:
         condition: service_completed_successfully
-    networks: [pipeline-net]
-    logging: *default-logging
+    restart: unless-stopped
 
-  # ===========================================================================
-  # LOG SOURCE - FRONTEND
-  # ===========================================================================
-  # VITE_API_BASE_URL is baked into the JS bundle at BUILD time and is called
-  # by the user's BROWSER, so it must be a host-reachable URL (the published
-  # api-gateway port), never an internal hostname. Changing it needs a rebuild.
-  # The container is static nginx, so no depends_on is required.
-  sms-frontend:
+  # ──────────────────────────────────────────
+  # SERVICE: Analytics Dashboard (Streamlit)
+  # Dashboard  →  http://localhost:8501
+  # ──────────────────────────────────────────
+  dashboard:
     build:
-      context: "./log sources/SMS-frontend/Student-management-system"
+      context: ./dashboard
       dockerfile: Dockerfile
-      args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:9191}
-    image: sms-frontend:latest
-    container_name: sms-frontend
-    restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-8081}:80"
-    networks: [sms-net]
-    logging: *default-logging
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  # ===========================================================================
-  # LOG SOURCE - SMS BACKEND (opt-in: --profile sms-backend)
-  # Needs pre-built JARs; see "Building the SMS backend JARs" below.
-  # ===========================================================================
-  service-registry:
-    build:
-      context: "./log sources/SMS-backend/service-registry/service-registry"
-    container_name: service-registry
-    restart: unless-stopped
-    profiles: ["sms-backend"]
+      - "8501:8501"
     environment:
-      LOG_FILE_PATH: /logs/service-registry.jsonl
-    ports:
-      - "${EUREKA_PORT:-8761}:8761"
-    volumes:
-      - runtime-logs:/logs
-    networks: [sms-net]
-    logging: *default-logging
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8761/ || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 40s
-
-  student-db:
-    <<: *mysql-base
-    container_name: student-db
-    environment:
-      MYSQL_ROOT_PASSWORD: ${SMS_DB_PASSWORD:-Himebw115}
-      MYSQL_DATABASE: SMS_Students_db
-    ports:
-      - "127.0.0.1:3307:3306"
-    volumes:
-      - student-data:/var/lib/mysql
-
-  course-db:
-    <<: *mysql-base
-    container_name: course-db
-    environment:
-      MYSQL_ROOT_PASSWORD: ${SMS_DB_PASSWORD:-Himebw115}
-      MYSQL_DATABASE: SMS_Course_db
-    ports:
-      - "127.0.0.1:3308:3306"
-    volumes:
-      - course-data:/var/lib/mysql
-
-  auth-db:
-    <<: *mysql-base
-    container_name: auth-db
-    environment:
-      MYSQL_ROOT_PASSWORD: ${SMS_DB_PASSWORD:-Himebw115}
-      MYSQL_DATABASE: SMS_Auth_db
-    ports:
-      - "127.0.0.1:3309:3306"
-    volumes:
-      - auth-data:/var/lib/mysql
-
-  audit-db:
-    <<: *mysql-base
-    container_name: audit-db
-    environment:
-      MYSQL_ROOT_PASSWORD: ${SMS_DB_PASSWORD:-Himebw115}
-      MYSQL_DATABASE: SMS_Audit_db
-    ports:
-      - "127.0.0.1:3310:3306"
-    volumes:
-      - audit-data:/var/lib/mysql
-
-  auth-service:
-    build:
-      context: "./log sources/SMS-backend/auth-service/auth-service"
-    container_name: auth-service
-    restart: unless-stopped
-    profiles: ["sms-backend"]
-    environment:
-      MYSQL_HOST: auth-db
-      MYSQL_USER: root
-      MYSQL_PASSWORD: ${SMS_DB_PASSWORD:-Himebw115}
-      EUREKA_SERVER: service-registry
-      LOG_FILE_PATH: /logs/auth-service.jsonl
-    ports:
-      - "8084:8084"
-    volumes:
-      - runtime-logs:/logs
+      API_BASE_URL: http://log-ingestion-api:8000
+      DEMO_MODE: "false"
     depends_on:
-      auth-db:
-        condition: service_healthy
-      service-registry:
-        condition: service_healthy
-    networks: [sms-net]
-    logging: *default-logging
-
-  student-service:
-    build:
-      context: "./log sources/SMS-backend/student-service/student-service"
-    container_name: student-service
+      - log-ingestion-api
     restart: unless-stopped
-    profiles: ["sms-backend"]
-    environment:
-      MYSQL_HOST: student-db
-      MYSQL_USER: root
-      MYSQL_PASSWORD: ${SMS_DB_PASSWORD:-Himebw115}
-      EUREKA_SERVER: service-registry
-      LOG_FILE_PATH: /logs/student-service.jsonl
-    ports:
-      - "8082:8082"
-    volumes:
-      - runtime-logs:/logs
-    depends_on:
-      student-db:
-        condition: service_healthy
-      service-registry:
-        condition: service_healthy
-    networks: [sms-net]
-    logging: *default-logging
 
-  course-service:
-    build:
-      context: "./log sources/SMS-backend/course-service/course-service"
-    container_name: course-service
-    restart: unless-stopped
-    profiles: ["sms-backend"]
-    environment:
-      MYSQL_HOST: course-db
-      MYSQL_USER: root
-      MYSQL_PASSWORD: ${SMS_DB_PASSWORD:-Himebw115}
-      EUREKA_SERVER: service-registry
-      LOG_FILE_PATH: /logs/course-service.jsonl
-    ports:
-      - "8083:8083"
-    volumes:
-      - runtime-logs:/logs
-    depends_on:
-      course-db:
-        condition: service_healthy
-      service-registry:
-        condition: service_healthy
-    networks: [sms-net]
-    logging: *default-logging
 
-  audit-service:
-    build:
-      context: "./log sources/SMS-backend/audit-service/audit-service"
-    container_name: audit-service
-    restart: unless-stopped
-    profiles: ["sms-backend"]
-    environment:
-      MYSQL_HOST: audit-db
-      MYSQL_USER: root
-      MYSQL_PASSWORD: ${SMS_DB_PASSWORD:-Himebw115}
-      EUREKA_SERVER: service-registry
-      LOG_FILE_PATH: /logs/audit-service.jsonl
-      LOGS_DIRECTORY: /logs
-    ports:
-      - "8085:8085"
-    volumes:
-      - runtime-logs:/logs
-    depends_on:
-      audit-db:
-        condition: service_healthy
-      service-registry:
-        condition: service_healthy
-    networks: [sms-net]
-    logging: *default-logging
-
-  api-gateway:
-    build:
-      context: "./log sources/SMS-backend/api-gateway/api-gateway"
-    container_name: api-gateway
-    restart: unless-stopped
-    profiles: ["sms-backend"]
-    environment:
-      EUREKA_SERVER: service-registry
-      LOG_FILE_PATH: /logs/api-gateway.jsonl
-    ports:
-      - "${GATEWAY_PORT:-9191}:9191"
-    volumes:
-      - runtime-logs:/logs
-    depends_on:
-      service-registry:
-        condition: service_healthy
-      auth-service:
-        condition: service_started
-      student-service:
-        condition: service_started
-      course-service:
-        condition: service_started
-    networks: [sms-net]
-    logging: *default-logging
-
-# =============================================================================
-# NETWORKS & VOLUMES
-# =============================================================================
-networks:
-  pipeline-net:
-    driver: bridge
-  sms-net:
-    driver: bridge
-
+# ──────────────────────────────────────────
+# Named Volumes (persist across restarts)
+# ──────────────────────────────────────────
 volumes:
   rabbitmq_data:
   mongodb_data:
   minio_data:
-  student-data:
-  course-data:
-  auth-data:
-  audit-data:
-  runtime-logs:
-
-# =============================================================================
-# Building the SMS backend JARs (only needed for --profile sms-backend)
-# Requires JDK 17 on the host. Run once from this directory (bash / Git Bash):
-#
-#   for d in "log sources/SMS-backend"/*/*/; do
-#     (cd "$d" && sh ./mvnw -q -DskipTests package)
-#   done
-# =============================================================================

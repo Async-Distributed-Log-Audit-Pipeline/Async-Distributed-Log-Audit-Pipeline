@@ -30,7 +30,8 @@ router = APIRouter(prefix="/metrics", tags=["Metrics"])
         "### Operational Health Evaluation Rule:\n"
         "- **critical**: If `critical_count > 0`\n"
         "- **degraded**: Else if `error_count > 0`\n"
-        "- **healthy**: If `critical_count == 0` and `error_count == 0`"
+        "- **warning**: Else if `warning_count > 0`\n"
+        "- **healthy**: Otherwise"
     ),
     responses={
         200: {"description": "List of aggregated metrics per service with computed health."},

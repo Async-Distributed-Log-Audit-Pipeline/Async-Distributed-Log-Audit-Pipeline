@@ -57,12 +57,12 @@ class StorageClient:
     def ensure_bucket_exists(self) -> None:
         """
         Verifies that the target bucket exists, creating it if absent.
-        Matches log-worker dev setup behavior.
+        Idempotent and handles existing buckets silently.
         """
         try:
             self.s3_client.head_bucket(Bucket=self.bucket_name)
         except ClientError as e:
-            error_code = e.response.get("Error", {}).get("Code")
+            error_code = str(e.response.get("Error", {}).get("Code", ""))
             if error_code in ("404", "NoSuchBucket", "NotFound"):
                 logger.info("Bucket '%s' does not exist. Creating...", self.bucket_name)
                 try:
@@ -74,9 +74,15 @@ class StorageClient:
                             CreateBucketConfiguration={"LocationConstraint": self.region},
                         )
                     logger.info("Bucket '%s' created successfully.", self.bucket_name)
-                except Exception as create_err:
-                    logger.error("Failed to create bucket '%s': %s", self.bucket_name, create_err)
-                    raise StorageUnavailableError(f"Failed to create bucket: {create_err}") from create_err
+                except ClientError as create_err:
+                    create_code = str(create_err.response.get("Error", {}).get("Code", ""))
+                    if create_code in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+                        logger.info("Bucket '%s' already exists.", self.bucket_name)
+                    else:
+                        logger.error("Failed to create bucket '%s': %s", self.bucket_name, create_err)
+                        raise StorageUnavailableError(f"Failed to create bucket: {create_err}") from create_err
+            elif error_code in ("403", "BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+                logger.info("Bucket '%s' already exists.", self.bucket_name)
             else:
                 logger.error("Error inspecting bucket '%s': %s", self.bucket_name, e)
                 raise StorageUnavailableError(f"Error accessing bucket: {e}") from e
@@ -87,7 +93,9 @@ class StorageClient:
     def upload_fileobj(self, fileobj: BinaryIO, object_key: str) -> None:
         """
         Uploads a stream/file-like object to object storage.
+        Ensures bucket exists before uploading.
         """
+        self.ensure_bucket_exists()
         try:
             self.s3_client.upload_fileobj(fileobj, self.bucket_name, object_key)
         except ClientError as e:

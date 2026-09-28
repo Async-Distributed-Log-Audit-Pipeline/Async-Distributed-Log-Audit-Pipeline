@@ -3,13 +3,15 @@ import gzip
 import json
 
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB limit
-REQUIRED_LOG_FIELDS = ("timestamp", "level", "service", "message")
-VALID_SEVERITY_LEVELS = {"INFO", "WARN", "WARNING", "ERROR", "CRITICAL"}
-SUPPORTED_EXTENSIONS = (".json", ".jsonl", ".gz")
+SUPPORTED_EXTENSIONS = (".json", ".jsonl", ".json.gz", ".jsonl.gz", ".gz")
 
 
 def validate_log_file(file) -> tuple[bool, str | None]:
-    """Validate log file size, format, decompression, and required JSONL fields.
+    """Perform a light sanity check on uploaded log files.
+
+    Confirms the file is non-empty, within size caps, uses an allowed extension,
+    and that initial lines parse as valid JSON objects. Specific log field schemas
+    and timestamps are left to server-side worker parsing.
 
     Returns:
         tuple[bool, str | None]: (is_valid, error_message)
@@ -31,7 +33,7 @@ def validate_log_file(file) -> tuple[bool, str | None]:
         return (
             False,
             f"Unsupported file format '{file.name}'. "
-            "Accepted formats are .json, .jsonl, or .json.gz.",
+            "Accepted formats are .json, .jsonl, .json.gz, or .jsonl.gz.",
         )
 
     raw_bytes = file.getvalue()
@@ -65,7 +67,7 @@ def validate_log_file(file) -> tuple[bool, str | None]:
                 "Please verify file encoding and upload again.",
             )
 
-    # Check non-empty lines
+    # Check non-empty lines for JSON structure
     lines = text.splitlines()
     checked_count = 0
 
@@ -84,29 +86,11 @@ def validate_log_file(file) -> tuple[bool, str | None]:
                 "Each line in the file must be a standalone JSON object.",
             )
 
-        if not isinstance(record, dict):
+        if not isinstance(record, (dict, list)):
             return (
                 False,
-                f"Line {line_idx} is a JSON array or scalar instead of a JSON object. "
+                f"Line {line_idx} is a scalar value instead of a JSON object. "
                 "Ensure each line represents an individual log entry object.",
-            )
-
-        # Verify required fields
-        for field in REQUIRED_LOG_FIELDS:
-            if field not in record:
-                return (
-                    False,
-                    f"Line {line_idx} is missing required field '{field}'. "
-                    f"Required fields: {', '.join(REQUIRED_LOG_FIELDS)}.",
-                )
-
-        # Verify severity level
-        level_str = str(record.get("level", "")).upper()
-        if level_str not in VALID_SEVERITY_LEVELS:
-            return (
-                False,
-                f"Line {line_idx} contains invalid level '{record.get('level')}'. "
-                f"Expected one of: INFO, WARN, ERROR, CRITICAL.",
             )
 
         checked_count += 1
@@ -117,3 +101,4 @@ def validate_log_file(file) -> tuple[bool, str | None]:
         return False, "File does not contain any valid log records."
 
     return True, None
+
