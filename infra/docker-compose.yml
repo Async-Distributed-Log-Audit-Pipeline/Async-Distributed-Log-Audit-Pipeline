@@ -1,0 +1,24 @@
+# Starter compose file (dashboard only). Add the other services as teammates finish theirs.
+# Run from repo root:  docker compose -f infra/docker-compose.yml up --build
+services:
+  dashboard:
+    build: ../dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      # DEMO_MODE=true shows mock data with no API. Set to false once log-ingestion-api is running.
+      - DEMO_MODE=${DEMO_MODE:-true}
+      - API_BASE_URL=${API_BASE_URL:-http://log-ingestion-api:8000}
+    networks:
+      - backend-net
+
+  # --- add below as teammates finish (names per SRS Section 9.4 / Figure 4) ---
+  # log-ingestion-api:   build: ../log-ingestion-api   (port 8000)
+  # log-worker:          build: ../log-worker
+  # rabbitmq:            image: rabbitmq:3-management  (5672, 15672)
+  # mongodb:             image: mongo:7                (27017)
+  # minio:               image: minio/minio            (9000, 9001)
+
+networks:
+  backend-net:
+    driver: bridge
