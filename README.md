@@ -70,7 +70,6 @@ The pipeline uses an **Event-Driven, Microservice-style Pattern**:
 ## 🚀 Getting Started (Local Prototype)
 
 ### Prerequisites
-
 * Docker Desktop & Docker Compose installed.
 
 ### Running Locally
@@ -80,9 +79,12 @@ The pipeline uses an **Event-Driven, Microservice-style Pattern**:
 git clone [https://github.com/nikeshala-3258/Async-Distributed-Log-Audit-Pipeline.git](https://github.com/nikeshala-3258/Async-Distributed-Log-Audit-Pipeline.git)
 cd Async-Distributed-Log-Audit-Pipeline
 
-# 2. Run with Docker Compose
-docker-compose up --build
+# 2. Set up environment variables
+cp .env.example .env
 
-```
+# 3. Run with Docker Compose
+docker compose up --build -d
 
+# 4. Check container status
+docker compose ps
 
