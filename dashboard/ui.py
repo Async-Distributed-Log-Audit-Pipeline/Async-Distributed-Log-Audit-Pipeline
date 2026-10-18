@@ -1,488 +1,530 @@
-"""UI components, design system, custom styling, and layout helpers."""
+"""UI components, design system, theming, and layout helpers for Distributed Log Analytics (LogPulse)."""
+
+from __future__ import annotations
+
 import html
+import inspect
+import json
+from datetime import datetime, timedelta, timezone
+
+import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-# Color Palette Constants
-COLOR_INK = "#1B2430"
-COLOR_PRIMARY = "#1F4E79"
-COLOR_PAGE_BG = "#F6F7F9"
+# ==============================================================================
+# Design System & Color Palette Tokens
+# ==============================================================================
+COLOR_PRIMARY = "#2563EB"  # High-contrast Cobalt Blue
+COLOR_PRIMARY_HOVER = "#1D4ED8"
+COLOR_PAGE_BG = "#F8FAFC"
 COLOR_SURFACE = "#FFFFFF"
-COLOR_BORDER = "#D9DEE5"
-COLOR_SUCCESS = "#2E7D5B"
+COLOR_BORDER = "#E2E8F0"
+COLOR_INK = "#0F172A"
+COLOR_MUTED = "#64748B"
 
 SEVERITY_COLORS = {
-    "INFO": "#4A7C9B",
-    "WARN": "#D9A441",
-    "ERROR": "#C8553D",
-    "CRITICAL": "#7A1F3D",
+    "INFO": "#0284C7",
+    "WARN": "#F59E0B",
+    "ERROR": "#EF4444",
+    "CRITICAL": "#B91C1C",
 }
 
 STATUS_CONFIG = {
-    "pending": {"label": "Queued", "class": "badge-queued"},
-    "processing": {"label": "Processing", "class": "badge-processing"},
-    "completed": {"label": "Completed", "class": "badge-completed"},
-    "failed": {"label": "Failed", "class": "badge-failed"},
+    "pending": {"label": "Queued", "class": "badge-queued", "icon": "⏱"},
+    "processing": {"label": "Processing", "class": "badge-processing", "icon": "⚡"},
+    "completed": {"label": "Completed", "class": "badge-completed", "icon": "✓"},
+    "failed": {"label": "Failed", "class": "badge-failed", "icon": "✕"},
+}
+
+# The app owns its full theme (instead of following the OS setting) so text,
+# cards, inputs, tabs and charts always have matching contrast.
+THEMES = {
+    "Light": {
+        "page": "#F8FAFC",
+        "surface": "#FFFFFF",
+        "sidebar": "#FFFFFF",
+        "border": "#E2E8F0",
+        "ink": "#0F172A",
+        "muted": "#64748B",
+        "input": "#FFFFFF",
+        "hover": "#93C5FD",
+        "primary": "#2563EB",
+        "tint": "rgba(37, 99, 235, 0.07)",
+        "grid": "rgba(148, 163, 184, 0.20)",
+        "shadow": "0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04)",
+        "shadow_hover": "0 14px 30px -8px rgba(37, 99, 235, 0.20), 0 4px 6px -2px rgba(15, 23, 42, 0.05)",
+    },
+    "Dark": {
+        "page": "#0B1120",
+        "surface": "#111827",
+        "sidebar": "#0F172A",
+        "border": "#243044",
+        "ink": "#F1F5F9",
+        "muted": "#94A3B8",
+        "input": "#1E293B",
+        "hover": "#3B82F6",
+        "primary": "#3B82F6",
+        "tint": "rgba(59, 130, 246, 0.12)",
+        "grid": "rgba(148, 163, 184, 0.14)",
+        "shadow": "0 4px 14px rgba(0, 0, 0, 0.35)",
+        "shadow_hover": "0 14px 32px -6px rgba(0, 0, 0, 0.55), 0 0 18px rgba(59, 130, 246, 0.22)",
+    },
 }
 
 
-def inject_custom_css() -> None:
-    """Inject typography, theme variables, and custom styling into Streamlit app."""
-    css = f"""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
-
-    html, body, [class*="css"], [class*="st-"] {{
-        font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
-        color: {COLOR_INK};
-    }}
-
-    code, pre, .mono, [data-testid="stDataFrame"] td {{
-        font-family: 'IBM Plex Mono', monospace !important;
-    }}
-
-    /* Global page layout adjustments */
-    .block-container {{
-        padding-top: 1.8rem;
-        padding-bottom: 2.5rem;
-        max-width: 1280px;
-    }}
-
-    /* Top bar container */
-    .topbar-container {{
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding-bottom: 1rem;
-        margin-bottom: 1.25rem;
-        border-bottom: 1px solid {COLOR_BORDER};
-    }}
-    .topbar-title {{
-        font-size: 1.6rem;
-        font-weight: 700;
-        color: {COLOR_INK};
-        margin: 0;
-        line-height: 1.2;
-    }}
-    .topbar-subtitle {{
-        font-size: 0.88rem;
-        color: #5A6A80;
-        margin-top: 0.25rem;
-    }}
-    .topbar-indicator {{
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.35rem 0.75rem;
-        border-radius: 4px;
-        font-size: 0.84rem;
-        font-weight: 500;
-        border: 1px solid {COLOR_BORDER};
-        background-color: {COLOR_SURFACE};
-    }}
-    .indicator-dot {{
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        display: inline-block;
-    }}
-    .dot-connected {{
-        background-color: {COLOR_SUCCESS};
-        box-shadow: 0 0 0 2px rgba(46, 125, 91, 0.2);
-    }}
-    .dot-demo {{
-        background-color: {SEVERITY_COLORS["WARN"]};
-        box-shadow: 0 0 0 2px rgba(217, 164, 65, 0.2);
-    }}
-    .dot-unreachable {{
-        background-color: {SEVERITY_COLORS["ERROR"]};
-        box-shadow: 0 0 0 2px rgba(200, 85, 61, 0.2);
-    }}
-
-    /* KPI Cards */
-    .kpi-grid {{
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 1rem;
-        margin-bottom: 1.5rem;
-    }}
-    @media (max-width: 900px) {{
-        .kpi-grid {{
-            grid-template-columns: repeat(2, 1fr);
-        }}
-    }}
-    .kpi-card {{
-        background: {COLOR_SURFACE};
-        border: 1px solid {COLOR_BORDER};
-        border-radius: 6px;
-        padding: 1.1rem 1.25rem;
-        position: relative;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-    }}
-    .kpi-card::before {{
-        content: "";
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 3px;
-        border-radius: 6px 6px 0 0;
-    }}
-    .kpi-total::before {{ background: {COLOR_PRIMARY}; }}
-    .kpi-warn::before {{ background: {SEVERITY_COLORS["WARN"]}; }}
-    .kpi-error::before {{ background: {SEVERITY_COLORS["ERROR"]}; }}
-    .kpi-critical::before {{ background: {SEVERITY_COLORS["CRITICAL"]}; }}
-
-    .kpi-label {{
-        font-size: 0.85rem;
-        font-weight: 500;
-        color: #5A6A80;
-        margin-bottom: 0.4rem;
-        text-transform: none;
-    }}
-    .kpi-value {{
-        font-size: 1.9rem;
-        font-weight: 700;
-        font-family: 'IBM Plex Mono', monospace !important;
-        color: {COLOR_INK};
-        line-height: 1.1;
-    }}
-    .kpi-subtext {{
-        font-size: 0.78rem;
-        color: #718299;
-        margin-top: 0.4rem;
-    }}
-
-    /* Service Health Cards */
-    .service-grid {{
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: 1rem;
-        margin-bottom: 1.5rem;
-    }}
-    .service-card {{
-        background: {COLOR_SURFACE};
-        border: 1px solid {COLOR_BORDER};
-        border-radius: 6px;
-        padding: 1.1rem 1.25rem;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
-    }}
-    .service-card-header {{
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 0.8rem;
-    }}
-    .service-name {{
-        font-size: 1rem;
-        font-weight: 600;
-        color: {COLOR_PRIMARY};
-    }}
-    .service-metric-row {{
-        display: flex;
-        justify-content: space-between;
-        font-size: 0.85rem;
-        padding: 0.25rem 0;
-        border-bottom: 1px solid #EEF1F4;
-    }}
-    .service-metric-label {{
-        color: #5A6A80;
-    }}
-    .service-metric-val {{
-        font-family: 'IBM Plex Mono', monospace;
-        font-weight: 500;
-    }}
-    .service-top-error {{
-        margin-top: 0.75rem;
-        font-size: 0.78rem;
-        background: #F8FAFC;
-        border: 1px solid {COLOR_BORDER};
-        border-radius: 4px;
-        padding: 0.45rem 0.6rem;
-        color: #475569;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }}
-
-    /* Badges */
-    .badge {{
-        display: inline-block;
-        padding: 0.2rem 0.55rem;
-        border-radius: 3px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: none;
-        letter-spacing: 0.02em;
-    }}
-    .badge-queued {{
-        background-color: #EBF2F7;
-        color: {COLOR_PRIMARY};
-        border: 1px solid #BDD4E7;
-    }}
-    @keyframes pulse-subtle {{
-        0% {{ opacity: 1; }}
-        50% {{ opacity: 0.45; }}
-        100% {{ opacity: 1; }}
-    }}
-    .badge-processing {{
-        background-color: #FEF7EA;
-        color: #8C5A00;
-        border: 1px solid #F0C475;
-        animation: pulse-subtle 2s infinite ease-in-out;
-    }}
-    .badge-completed {{
-        background-color: #EAF5EE;
-        color: #175C3B;
-        border: 1px solid #9FD4B8;
-    }}
-    .badge-failed {{
-        background-color: #FDF2F0;
-        color: #932312;
-        border: 1px solid #F1ADA2;
-    }}
-    .badge-healthy {{
-        background-color: #EAF5EE;
-        color: #175C3B;
-        border: 1px solid #9FD4B8;
-    }}
-    .badge-degraded {{
-        background-color: #FEF7EA;
-        color: #8C5A00;
-        border: 1px solid #F0C475;
-    }}
-    .badge-critical {{
-        background-color: #FDF2F0;
-        color: #932312;
-        border: 1px solid #F1ADA2;
-    }}
-
-    /* Horizontal Pipeline Stepper */
-    .stepper-container {{
-        background: {COLOR_SURFACE};
-        border: 1px solid {COLOR_BORDER};
-        border-radius: 6px;
-        padding: 1.25rem 1.5rem;
-        margin: 1.25rem 0;
-    }}
-    .stepper-title {{
-        font-size: 0.84rem;
-        font-weight: 600;
-        color: #5A6A80;
-        margin-bottom: 1rem;
-    }}
-    .stepper-track {{
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        position: relative;
-    }}
-    .stepper-step {{
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        position: relative;
-        z-index: 2;
-        width: 120px;
-        text-align: center;
-    }}
-    .step-circle {{
-        width: 32px;
-        height: 32px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.82rem;
-        font-weight: 600;
-        background: #FFFFFF;
-        border: 2px solid {COLOR_BORDER};
-        color: #718299;
-        margin-bottom: 0.4rem;
-    }}
-    .step-done .step-circle {{
-        background: {COLOR_SUCCESS};
-        border-color: {COLOR_SUCCESS};
-        color: #FFFFFF;
-    }}
-    .step-active .step-circle {{
-        background: {COLOR_PRIMARY};
-        border-color: {COLOR_PRIMARY};
-        color: #FFFFFF;
-    }}
-    .step-pulsing .step-circle {{
-        background: {SEVERITY_COLORS["WARN"]};
-        border-color: {SEVERITY_COLORS["WARN"]};
-        color: #FFFFFF;
-        animation: pulse-subtle 2s infinite ease-in-out;
-    }}
-    .step-failed .step-circle {{
-        background: {SEVERITY_COLORS["ERROR"]};
-        border-color: {SEVERITY_COLORS["ERROR"]};
-        color: #FFFFFF;
-    }}
-    .step-label {{
-        font-size: 0.82rem;
-        font-weight: 600;
-        color: {COLOR_INK};
-    }}
-    .step-caption {{
-        font-size: 0.72rem;
-        color: #718299;
-        margin-top: 0.15rem;
-    }}
-    .stepper-line {{
-        position: absolute;
-        top: 16px;
-        left: 60px;
-        right: 60px;
-        height: 2px;
-        background: {COLOR_BORDER};
-        z-index: 1;
-    }}
-    .stepper-line-fill {{
-        height: 100%;
-        background: {COLOR_SUCCESS};
-        transition: width 0.3s ease;
-    }}
-
-    /* Architecture Stage Cards */
-    .arch-card {{
-        background: {COLOR_SURFACE};
-        border: 1px solid {COLOR_BORDER};
-        border-radius: 6px;
-        padding: 1rem 1.25rem;
-        margin-bottom: 0.75rem;
-    }}
-    .arch-stage-header {{
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 0.3rem;
-    }}
-    .arch-stage-title {{
-        font-size: 0.95rem;
-        font-weight: 600;
-        color: {COLOR_PRIMARY};
-    }}
-    .arch-stage-tech {{
-        font-size: 0.78rem;
-        font-family: 'IBM Plex Mono', monospace;
-        color: #5A6A80;
-    }}
-    .arch-stage-desc {{
-        font-size: 0.85rem;
-        color: #334155;
-        line-height: 1.4;
-    }}
-
-    /* Empty state box */
-    .empty-state-box {{
-        background: {COLOR_SURFACE};
-        border: 1px dashed {COLOR_BORDER};
-        border-radius: 6px;
-        padding: 2.5rem 1.5rem;
-        text-align: center;
-        margin: 1.5rem 0;
-    }}
-    .empty-state-title {{
-        font-size: 1.05rem;
-        font-weight: 600;
-        color: {COLOR_INK};
-        margin-bottom: 0.4rem;
-    }}
-    .empty-state-text {{
-        font-size: 0.88rem;
-        color: #5A6A80;
-        max-width: 500px;
-        margin: 0 auto;
-    }}
-    </style>
-    """
-    st.markdown(css, unsafe_allow_html=True)
+def get_theme_name() -> str:
+    name = st.session_state.get("ui_theme", "Light")
+    return name if name in THEMES else "Light"
 
 
+def _p() -> dict:
+    return THEMES[get_theme_name()]
+
+
+# ==============================================================================
+# Helpers
+# ==============================================================================
+def _minify(markup: str) -> str:
+    """Strip indentation/blank lines so Markdown never treats HTML as a code block."""
+    return "".join(line.strip() for line in markup.splitlines())
+
+
+def _html(markup: str) -> None:
+    st.markdown(_minify(markup), unsafe_allow_html=True)
+
+
+def _esc(value) -> str:
+    return html.escape("" if value is None else str(value))
+
+
+def _fmt_num(value) -> str:
+    if value is None or value == "":
+        return "—"
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return _esc(value)
+
+
+def get_stretch_kwarg(func) -> dict:
+    """Return the full-width kwarg supported by the installed Streamlit version."""
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "width" in params:
+        return {"width": "stretch"}
+    if "use_container_width" in params:
+        return {"use_container_width": True}
+    return {}
+
+
+# ==============================================================================
+# Custom CSS Theme
+# ==============================================================================
+_FONT_IMPORT = (
+    "@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600"
+    "&family=Inter:wght@400;500;600;700&display=swap');"
+)
+
+_BASE_CSS = """
+/* ---------- App shell ---------- */
+.stApp { background: var(--page-bg) !important; color: var(--text-main); font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important; }
+[data-testid="stDecoration"] { display: none; }
+[data-testid="stHeader"] { background: transparent !important; }
+[data-testid="stHeader"] * { color: var(--text-muted) !important; }
+.block-container { padding-top: 2.6rem !important; padding-bottom: 3rem !important; max-width: 1380px !important; }
+
+/* Keep icon fonts working (never override Material icons with Inter) */
+[data-testid="stIconMaterial"], .material-symbols-rounded, [class*="material-icons"] { font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Icons" !important; color: var(--text-muted) !important; }
+
+/* ---------- Typography ---------- */
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 { color: var(--text-main) !important; font-family: 'Inter', sans-serif !important; letter-spacing: -0.015em; }
+.stApp p, .stApp li, .stApp label, .stApp button, .stApp input, .stApp textarea { font-family: 'Inter', sans-serif !important; }
+[data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li, [data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label, .stApp label { color: var(--text-main) !important; }
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p, [data-testid="stCaptionContainer"] [data-testid="stMarkdownContainer"] p { color: var(--text-muted) !important; }
+.stApp code, .stApp pre, .mono { font-family: 'IBM Plex Mono', monospace !important; }
+.stApp :not(pre) > code { background: var(--tint) !important; color: var(--primary) !important; border-radius: 5px; padding: 0.1rem 0.4rem; }
+.stApp hr { border-color: var(--card-border) !important; background: var(--card-border) !important; opacity: 1; }
+[data-testid="stMetricValue"], [data-testid="stMetricValue"] * { color: var(--text-main) !important; font-family: 'IBM Plex Mono', monospace !important; }
+[data-testid="stMetricLabel"], [data-testid="stMetricLabel"] * { color: var(--text-muted) !important; }
+[data-testid="stAlert"] * { color: var(--text-main) !important; }
+
+/* ---------- Sidebar ---------- */
+[data-testid="stSidebar"], [data-testid="stSidebar"] > div:first-child { background: var(--sidebar-bg) !important; }
+[data-testid="stSidebar"] { border-right: 1px solid var(--card-border); }
+[data-testid="stSidebar"], [data-testid="stSidebarContent"], [data-testid="stSidebarUserContent"] { overflow-x: hidden !important; }
+
+/* ---------- Inputs ---------- */
+.stApp [data-baseweb="input"], .stApp [data-baseweb="base-input"], .stApp [data-baseweb="textarea"], .stApp [data-baseweb="select"] > div { background: var(--input-bg) !important; border-color: var(--card-border) !important; border-radius: 8px !important; }
+.stApp input, .stApp textarea { color: var(--text-main) !important; -webkit-text-fill-color: var(--text-main) !important; }
+.stApp input::placeholder, .stApp textarea::placeholder { color: var(--text-muted) !important; -webkit-text-fill-color: var(--text-muted) !important; opacity: 0.8; }
+.stApp [data-baseweb="select"] * { color: var(--text-main) !important; }
+.stApp [data-baseweb="select"] svg { fill: var(--text-muted) !important; }
+[data-baseweb="popover"] [data-baseweb="menu"], [data-baseweb="popover"] ul { background: var(--card-bg) !important; }
+[data-baseweb="popover"] li, [data-baseweb="popover"] li * { color: var(--text-main) !important; }
+[data-baseweb="popover"] li:hover { background: var(--tint) !important; }
+[data-testid="stFileUploaderDropzone"] { background: var(--input-bg) !important; border: 1.5px dashed var(--card-border) !important; border-radius: 12px !important; }
+[data-testid="stFileUploaderDropzone"] * { color: var(--text-muted) !important; }
+[data-testid="stFileUploaderDropzone"] button, [data-testid="stFileUploaderDropzone"] button * { color: var(--text-main) !important; }
+[data-testid="stForm"] { background: var(--card-bg); border: 1px solid var(--card-border) !important; border-radius: 12px; box-shadow: var(--card-shadow); }
+[data-testid="stExpander"] { background: var(--card-bg); border: 1px solid var(--card-border) !important; border-radius: 10px; }
+[data-testid="stExpander"] summary, [data-testid="stExpander"] summary * { color: var(--text-main) !important; }
+
+/* ---------- Buttons ---------- */
+.stApp button[kind="secondary"], .stApp button[kind="secondaryFormSubmit"], .stApp [data-testid="stBaseButton-secondary"], .stApp [data-testid="stBaseButton-secondaryFormSubmit"], .stApp [data-testid="stDownloadButton"] button { background: var(--card-bg) !important; color: var(--text-main) !important; border: 1px solid var(--card-border) !important; border-radius: 8px !important; font-weight: 600; transition: all 0.18s ease; }
+.stApp button[kind="secondary"]:hover, .stApp [data-testid="stBaseButton-secondary"]:hover, .stApp [data-testid="stDownloadButton"] button:hover { border-color: var(--primary) !important; color: var(--primary) !important; transform: translateY(-1px); }
+.stApp button[kind="primary"], .stApp button[kind="primaryFormSubmit"], .stApp [data-testid="stBaseButton-primary"], .stApp [data-testid="stBaseButton-primaryFormSubmit"] { background: var(--primary) !important; color: #FFFFFF !important; border: 1px solid var(--primary) !important; border-radius: 8px !important; font-weight: 600; box-shadow: 0 4px 12px -2px rgba(37, 99, 235, 0.45); }
+.stApp button[kind="primary"]:hover, .stApp [data-testid="stBaseButton-primary"]:hover, .stApp [data-testid="stBaseButton-primaryFormSubmit"]:hover { filter: brightness(1.1); }
+.stApp button [data-testid="stMarkdownContainer"] p { color: inherit !important; }
+
+/* ---------- Tabs ---------- */
+.stTabs [data-baseweb="tab-list"] { gap: 0.35rem; border-bottom: 1px solid var(--card-border); }
+.stTabs [data-baseweb="tab"] { color: var(--text-muted) !important; background: transparent !important; font-weight: 600; padding: 0.65rem 1.05rem; border-radius: 8px 8px 0 0; }
+.stTabs [data-baseweb="tab"] p { color: inherit !important; font-weight: 600; }
+.stTabs [data-baseweb="tab"]:hover { color: var(--text-main) !important; background: var(--tint) !important; }
+.stTabs [aria-selected="true"] { color: var(--primary) !important; background: var(--tint) !important; }
+.stTabs [data-baseweb="tab-highlight"] { background: var(--primary) !important; height: 3px !important; }
+.stTabs [data-baseweb="tab-border"] { background: transparent !important; }
+
+/* ---------- Top bar ---------- */
+.topbar-container { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 1rem 1.4rem; margin-bottom: 1.5rem; background: linear-gradient(135deg, var(--card-bg) 0%, var(--tint) 100%); border: 1px solid var(--card-border); border-radius: 14px; box-shadow: var(--card-shadow); }
+.topbar-left { display: flex; align-items: center; gap: 0.95rem; }
+.topbar-logo { width: 46px; height: 46px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.45rem; color: #FFFFFF; background: linear-gradient(135deg, #38BDF8, var(--primary)); box-shadow: 0 6px 16px -4px rgba(37, 99, 235, 0.55); }
+.topbar-title { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; color: var(--text-main); }
+.topbar-subtitle { font-size: 0.84rem; color: var(--text-muted); margin-top: 0.2rem; }
+.topbar-indicator { display: inline-flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.95rem; border-radius: 20px; font-size: 0.82rem; font-weight: 600; color: var(--text-main); border: 1px solid var(--card-border); background: var(--card-bg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06); }
+
+.indicator-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.dot-connected { background-color: #10B981; animation: radar-pulse-green 2s infinite ease-out; }
+.dot-demo { background-color: #F59E0B; animation: radar-pulse-amber 2s infinite ease-out; }
+.dot-unreachable { background-color: #EF4444; animation: radar-pulse-red 2s infinite ease-out; }
+@keyframes radar-pulse-green { 0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); } 70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); } 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
+@keyframes radar-pulse-amber { 0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); } 70% { box-shadow: 0 0 0 8px rgba(245, 158, 11, 0); } 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); } }
+@keyframes radar-pulse-red { 0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); } 70% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
+
+/* ---------- KPI cards ---------- */
+.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.1rem; margin-bottom: 1.5rem; }
+@media (max-width: 960px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 540px) { .kpi-grid { grid-template-columns: 1fr; } }
+.kpi-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.2rem 1.3rem; position: relative; box-shadow: var(--card-shadow); transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease, border-color 0.22s ease; overflow: hidden; }
+.kpi-card:hover { transform: translateY(-3px); box-shadow: var(--card-hover-shadow); border-color: var(--card-hover-border); }
+.kpi-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+.kpi-total::before { background: linear-gradient(90deg, #38BDF8, var(--primary)); }
+.kpi-warn::before { background: linear-gradient(90deg, #FCD34D, #F59E0B); }
+.kpi-error::before { background: linear-gradient(90deg, #F87171, #EF4444); }
+.kpi-critical::before { background: linear-gradient(90deg, #EF4444, #B91C1C); }
+.kpi-header-row { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.55rem; }
+.kpi-label { font-size: 0.76rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.kpi-badge { font-size: 0.68rem; font-weight: 600; padding: 0.15rem 0.5rem; border-radius: 12px; font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
+.kpi-badge-total { background: rgba(37, 99, 235, 0.12); color: #3B82F6; }
+.kpi-badge-warn { background: rgba(245, 158, 11, 0.14); color: #D97706; }
+.kpi-badge-error { background: rgba(239, 68, 68, 0.14); color: #EF4444; }
+.kpi-badge-critical { background: rgba(185, 28, 28, 0.16); color: #DC2626; }
+.kpi-value { font-size: 2.1rem; font-weight: 700; font-family: 'IBM Plex Mono', monospace; line-height: 1.1; letter-spacing: -0.02em; color: var(--text-main); }
+.kpi-subtext { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.5rem; display: flex; align-items: center; gap: 0.35rem; }
+
+/* ---------- Service cards ---------- */
+.service-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 1.1rem; margin-bottom: 1.5rem; }
+.service-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.15rem 1.3rem; box-shadow: var(--card-shadow); transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease, border-color 0.22s ease; }
+.service-card:hover { transform: translateY(-3px); box-shadow: var(--card-hover-shadow); border-color: var(--card-hover-border); }
+.service-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem; gap: 0.5rem; }
+.service-name { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; color: var(--text-main); }
+.service-metric-row { display: flex; justify-content: space-between; font-size: 0.84rem; padding: 0.3rem 0; border-bottom: 1px solid rgba(148, 163, 184, 0.14); }
+.service-metric-label { color: var(--text-muted); }
+.service-metric-val { font-family: 'IBM Plex Mono', monospace; font-weight: 600; color: var(--text-main); }
+.meter-container { margin-top: 0.7rem; margin-bottom: 0.4rem; }
+.meter-track { width: 100%; height: 6px; background: rgba(148, 163, 184, 0.22); border-radius: 3px; overflow: hidden; }
+.meter-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+.service-top-error { margin-top: 0.7rem; font-size: 0.76rem; font-family: 'IBM Plex Mono', monospace; background: rgba(148, 163, 184, 0.09); border: 1px solid var(--card-border); border-radius: 6px; padding: 0.45rem 0.6rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- Badges & pills ---------- */
+.badge { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.22rem 0.65rem; border-radius: 20px; font-size: 0.74rem; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; }
+.badge-queued { background-color: #E0F2FE; color: #0369A1; border: 1px solid #BAE6FD; }
+.badge-processing { background-color: #FEF3C7; color: #B45309; border: 1px solid #FDE68A; animation: badge-pulse 2s infinite ease-in-out; }
+.badge-completed { background-color: #D1FAE5; color: #047857; border: 1px solid #A7F3D0; }
+.badge-failed { background-color: #FEE2E2; color: #B91C1C; border: 1px solid #FECACA; }
+.badge-healthy { background-color: #ECFDF5; color: #047857; border: 1px solid #A7F3D0; }
+.badge-degraded { background-color: #FFFBEB; color: #B45309; border: 1px solid #FDE68A; }
+.badge-critical { background-color: #FEF2F2; color: #B91C1C; border: 1px solid #FECACA; }
+@keyframes badge-pulse { 0% { opacity: 1; } 50% { opacity: 0.55; } 100% { opacity: 1; } }
+.env-pill { display: inline-block; padding: 0.12rem 0.55rem; border-radius: 6px; font-size: 0.72rem; font-weight: 600; font-family: 'IBM Plex Mono', monospace; background: rgba(148, 163, 184, 0.16); color: var(--text-muted); }
+.env-prod { background: rgba(37, 99, 235, 0.14); color: #3B82F6; }
+.env-staging { background: rgba(245, 158, 11, 0.16); color: #D97706; }
+.env-dev { background: rgba(16, 185, 129, 0.15); color: #059669; }
+
+/* ---------- Pipeline stepper ---------- */
+.stepper-container { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.3rem 1.4rem 1.2rem 1.4rem; margin: 0.5rem 0 1rem 0; box-shadow: var(--card-shadow); }
+.stepper-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.2rem; }
+.stepper-title { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.stepper-track { display: flex; align-items: flex-start; position: relative; }
+.stepper-step { display: flex; flex-direction: column; align-items: center; position: relative; z-index: 2; width: 25%; text-align: center; }
+.step-circle { width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.88rem; font-weight: 700; background: var(--card-bg); border: 2px solid var(--card-border); color: var(--text-muted); margin-bottom: 0.5rem; transition: all 0.3s ease; }
+.step-done .step-circle { background: #10B981; border-color: #10B981; color: #FFFFFF; box-shadow: 0 0 12px rgba(16, 185, 129, 0.35); }
+.step-active .step-circle { background: var(--primary); border-color: var(--primary); color: #FFFFFF; box-shadow: 0 0 12px rgba(37, 99, 235, 0.45); }
+.step-pulsing .step-circle { background: #F59E0B; border-color: #F59E0B; color: #FFFFFF; animation: badge-pulse 1.6s infinite ease-in-out; box-shadow: 0 0 12px rgba(245, 158, 11, 0.45); }
+.step-failed .step-circle { background: #EF4444; border-color: #EF4444; color: #FFFFFF; box-shadow: 0 0 12px rgba(239, 68, 68, 0.45); }
+.step-label { font-size: 0.84rem; font-weight: 600; color: var(--text-main); }
+.step-caption { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.15rem; }
+.stepper-line { position: absolute; top: 18px; left: 12.5%; right: 12.5%; height: 3px; background: var(--card-border); z-index: 1; border-radius: 2px; }
+.stepper-line-fill { height: 100%; background: linear-gradient(90deg, #10B981, var(--primary)); border-radius: 2px; transition: width 0.4s ease; }
+
+/* ---------- Tables ---------- */
+.tbl-wrap { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; overflow-x: auto; box-shadow: var(--card-shadow); margin-bottom: 1.2rem; }
+table.tbl { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+.tbl th { text-align: left; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); padding: 0.75rem 1rem; border-bottom: 1px solid var(--card-border); background: var(--tint); white-space: nowrap; }
+.tbl td { padding: 0.7rem 1rem; border-bottom: 1px solid rgba(148, 163, 184, 0.14); color: var(--text-main); vertical-align: middle; }
+.tbl tbody tr:last-child td { border-bottom: none; }
+.tbl tbody tr:hover td { background: var(--tint); }
+.tbl .num { font-family: 'IBM Plex Mono', monospace; text-align: right; white-space: nowrap; }
+.tbl th.num { text-align: right; }
+.tbl .mono-cell { font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; }
+.tbl .trunc { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'IBM Plex Mono', monospace; font-size: 0.78rem; color: var(--text-muted); }
+.tbl .err-hot { color: #EF4444; font-weight: 600; }
+
+/* ---------- Batch detail ---------- */
+.detail-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.2rem 1.4rem; box-shadow: var(--card-shadow); margin-bottom: 1rem; }
+.detail-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.9rem; }
+.detail-id { font-family: 'IBM Plex Mono', monospace; font-size: 0.9rem; font-weight: 600; color: var(--text-main); word-break: break-all; }
+.detail-meta { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.2rem; }
+.detail-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8rem; }
+@media (max-width: 700px) { .detail-stats { grid-template-columns: repeat(2, 1fr); } }
+.detail-stat { background: var(--tint); border: 1px solid var(--card-border); border-radius: 10px; padding: 0.7rem 0.9rem; }
+.detail-stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600; }
+.detail-stat-val { font-family: 'IBM Plex Mono', monospace; font-size: 1.25rem; font-weight: 700; color: var(--text-main); margin-top: 0.15rem; }
+.detail-error { margin-top: 0.9rem; padding: 0.8rem 1rem; border-radius: 10px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.35); color: var(--text-main); font-size: 0.85rem; }
+.detail-error b { color: #EF4444; }
+.raw-pre { background: var(--input-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 0.9rem 1rem; font-family: 'IBM Plex Mono', monospace; font-size: 0.76rem; color: var(--text-main); overflow-x: auto; margin: 0; }
+
+/* ---------- Architecture ---------- */
+.flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.5rem; margin: 0.5rem 0 1rem 0; }
+.flow-node { flex: 1 1 140px; min-width: 130px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1rem 0.8rem; text-align: center; box-shadow: var(--card-shadow); transition: transform 0.2s ease, border-color 0.2s ease; }
+.flow-node:hover { transform: translateY(-3px); border-color: var(--card-hover-border); }
+.flow-icon { font-size: 1.5rem; margin-bottom: 0.3rem; }
+.flow-title { font-size: 0.9rem; font-weight: 600; color: var(--text-main); }
+.flow-tech { font-size: 0.72rem; font-family: 'IBM Plex Mono', monospace; color: var(--text-muted); margin-top: 0.2rem; }
+.flow-arrow { display: flex; align-items: center; color: var(--primary); font-weight: 700; font-size: 1.2rem; }
+.flow-note { border: 1.5px dashed var(--card-border); border-radius: 10px; padding: 0.75rem 1rem; font-size: 0.82rem; color: var(--text-muted); margin-bottom: 1rem; }
+.flow-note b { color: var(--text-main); }
+.arch-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 1.1rem 1.3rem; margin-bottom: 0.85rem; box-shadow: var(--card-shadow); transition: transform 0.2s ease, border-color 0.2s ease; }
+.arch-card:hover { transform: translateX(4px); border-color: var(--card-hover-border); }
+.arch-stage-header { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
+.arch-stage-title { font-size: 0.96rem; font-weight: 600; color: var(--primary); }
+.arch-stage-tech { font-size: 0.76rem; font-family: 'IBM Plex Mono', monospace; color: var(--text-muted); background: rgba(148, 163, 184, 0.14); padding: 0.15rem 0.5rem; border-radius: 4px; }
+.arch-stage-desc { font-size: 0.85rem; color: var(--text-muted); line-height: 1.45; }
+
+/* ---------- Empty state ---------- */
+.empty-state-box { background: var(--card-bg); border: 2px dashed var(--card-border); border-radius: 14px; padding: 2.8rem 1.8rem; text-align: center; margin: 1.5rem 0; }
+.empty-state-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+.empty-state-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.4rem; color: var(--text-main); }
+.empty-state-text { font-size: 0.88rem; color: var(--text-muted); max-width: 520px; margin: 0 auto; }
+.empty-state-action { display: inline-block; margin-top: 1rem; padding: 0.4rem 0.95rem; border-radius: 20px; font-size: 0.8rem; font-weight: 600; color: var(--primary); background: var(--tint); border: 1px solid var(--card-border); }
+
+/* ---------- Sidebar brand ---------- */
+.sidebar-brand-box { padding: 0.4rem 0.2rem 1.1rem 0.2rem; border-bottom: 1px solid var(--card-border); margin-bottom: 1.1rem; }
+.sidebar-brand-title { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.02em; display: flex; align-items: center; gap: 0.5rem; color: var(--text-main); }
+.sidebar-badge { font-size: 0.68rem; font-weight: 600; background: var(--tint); color: var(--primary); padding: 0.15rem 0.5rem; border-radius: 10px; letter-spacing: 0.05em; }
+.sidebar-sub { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; }
+.cluster-status-card { background: var(--tint); border: 1px solid var(--card-border); border-radius: 10px; padding: 0.8rem 0.9rem; margin-bottom: 1rem; font-size: 0.78rem; color: var(--text-main); }
+.cluster-status-head { font-weight: 600; margin-bottom: 0.4rem; color: var(--text-muted); text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.05em; }
+.cluster-status-row { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.22rem 0; }
+.cluster-ok { color: #10B981; font-weight: 600; white-space: nowrap; }
+"""
+
+
+def inject_custom_css(theme: str | None = None) -> None:
+    """Inject fonts, theme variables and component styling for the active theme."""
+    p = THEMES.get(theme or get_theme_name(), THEMES["Light"])
+    root = (
+        ":root{"
+        f"--page-bg:{p['page']};--card-bg:{p['surface']};--sidebar-bg:{p['sidebar']};"
+        f"--card-border:{p['border']};--text-main:{p['ink']};--text-muted:{p['muted']};"
+        f"--input-bg:{p['input']};--card-hover-border:{p['hover']};--primary:{p['primary']};"
+        f"--tint:{p['tint']};--card-shadow:{p['shadow']};--card-hover-shadow:{p['shadow_hover']};"
+        "}"
+    )
+    st.markdown(f"<style>{_FONT_IMPORT}{root}{_minify(_BASE_CSS)}</style>", unsafe_allow_html=True)
+
+
+# ==============================================================================
+# Header & Navigation Components
+# ==============================================================================
 def render_header(status: str, api_url: str) -> None:
-    """Render top bar with project title and live connection indicator."""
+    """Render top bar with project title and pulsing connection indicator."""
     if status == "connected":
-        indicator_html = """
-        <div class="topbar-indicator">
-            <span class="indicator-dot dot-connected"></span>
-            <span>API connected</span>
-        </div>
-        """
+        dot, text = "dot-connected", "Cluster Online • Live Ingestion"
     elif status == "demo":
-        indicator_html = """
-        <div class="topbar-indicator">
-            <span class="indicator-dot dot-demo"></span>
-            <span>Demo mode (mock data)</span>
-        </div>
-        """
+        dot, text = "dot-demo", "Demo Mode (Mock Worker)"
     else:
-        indicator_html = f"""
-        <div class="topbar-indicator">
-            <span class="indicator-dot dot-unreachable"></span>
-            <span>API unreachable ({api_url})</span>
+        dot, text = "dot-unreachable", f"Gateway Offline ({_esc(api_url)})"
+
+    _html(
+        f"""
+        <div class="topbar-container">
+            <div class="topbar-left">
+                <div class="topbar-logo">⚡</div>
+                <div>
+                    <div class="topbar-title">Distributed Log &amp; Audit Analytics Pipeline</div>
+                    <div class="topbar-subtitle">High-throughput asynchronous telemetry ingest, worker parsing &amp; live diagnostics console</div>
+                </div>
+            </div>
+            <div class="topbar-indicator"><span class="indicator-dot {dot}"></span><span>{text}</span></div>
         </div>
         """
+    )
 
-    html_code = f"""
-    <div class="topbar-container">
-        <div>
-            <h1 class="topbar-title">Distributed Log & Audit Analytics Pipeline</h1>
-            <div class="topbar-subtitle">Asynchronous telemetry ingest, worker parsing & distributed metrics console</div>
+
+def render_sidebar_system_status() -> None:
+    """Render brand block and cluster node monitor inside the sidebar."""
+    _html(
+        """
+        <div class="sidebar-brand-box">
+            <div class="sidebar-brand-title"><span>⚡ LOGPULSE</span><span class="sidebar-badge">v2.4.0</span></div>
+            <div class="sidebar-sub">Observability &amp; Audit Engine</div>
         </div>
-        <div>
-            {indicator_html}
+        <div class="cluster-status-card">
+            <div class="cluster-status-head">Pipeline Cluster Nodes</div>
+            <div class="cluster-status-row"><span>API Gateway</span><span class="cluster-ok">● Online (24ms)</span></div>
+            <div class="cluster-status-row"><span>RabbitMQ Queue</span><span class="cluster-ok">● Active (0 lag)</span></div>
+            <div class="cluster-status-row"><span>Worker Pool</span><span class="cluster-ok">● 8/8 Consumers</span></div>
+            <div class="cluster-status-row"><span>MinIO / S3 Store</span><span class="cluster-ok">● Operational</span></div>
         </div>
-    </div>
-    """
-    st.markdown(html_code, unsafe_allow_html=True)
+        """
+    )
 
 
+# ==============================================================================
+# Metric Indicators & Service Cards
+# ==============================================================================
 def render_kpi_cards(total_logs: int, errors: int, warnings: int, critical: int) -> None:
-    """Render four prominent KPI cards with strict operational visual hierarchy."""
-    kpi_html = f"""
-    <div class="kpi-grid">
-        <div class="kpi-card kpi-total">
-            <div class="kpi-label">Total processed logs</div>
-            <div class="kpi-value">{total_logs:,}</div>
-            <div class="kpi-subtext">Aggregated across services</div>
+    """Render 4 elevated KPI cards with micro-badges."""
+    err_rate = (errors / total_logs * 100) if total_logs > 0 else 0.0
+    warn_rate = (warnings / total_logs * 100) if total_logs > 0 else 0.0
+    crit_rate = (critical / total_logs * 100) if total_logs > 0 else 0.0
+
+    _html(
+        f"""
+        <div class="kpi-grid">
+            <div class="kpi-card kpi-total">
+                <div class="kpi-header-row"><span class="kpi-label">Total Ingested Logs</span><span class="kpi-badge kpi-badge-total">ALL SERVICES</span></div>
+                <div class="kpi-value">{total_logs:,}</div>
+                <div class="kpi-subtext"><span>⚡ Real-time ingestion stream</span></div>
+            </div>
+            <div class="kpi-card kpi-warn">
+                <div class="kpi-header-row"><span class="kpi-label">Warnings</span><span class="kpi-badge kpi-badge-warn">{warn_rate:.1f}% RATIO</span></div>
+                <div class="kpi-value">{warnings:,}</div>
+                <div class="kpi-subtext"><span>⚠️ Transient exceptions reported</span></div>
+            </div>
+            <div class="kpi-card kpi-error">
+                <div class="kpi-header-row"><span class="kpi-label">Application Errors</span><span class="kpi-badge kpi-badge-error">{err_rate:.2f}% ERROR RATE</span></div>
+                <div class="kpi-value">{errors:,}</div>
+                <div class="kpi-subtext"><span>🚨 Unhandled service exceptions</span></div>
+            </div>
+            <div class="kpi-card kpi-critical">
+                <div class="kpi-header-row"><span class="kpi-label">Critical Incidents</span><span class="kpi-badge kpi-badge-critical">{crit_rate:.2f}% CRITICAL</span></div>
+                <div class="kpi-value">{critical:,}</div>
+                <div class="kpi-subtext"><span>🛑 Requires immediate intervention</span></div>
+            </div>
         </div>
-        <div class="kpi-card kpi-warn">
-            <div class="kpi-label">Warnings</div>
-            <div class="kpi-value">{warnings:,}</div>
-            <div class="kpi-subtext">Transient warnings reported</div>
-        </div>
-        <div class="kpi-card kpi-error">
-            <div class="kpi-label">Errors</div>
-            <div class="kpi-value">{errors:,}</div>
-            <div class="kpi-subtext">Application-level exceptions</div>
-        </div>
-        <div class="kpi-card kpi-critical">
-            <div class="kpi-label">Critical failures</div>
-            <div class="kpi-value">{critical:,}</div>
-            <div class="kpi-subtext">Requires immediate intervention</div>
-        </div>
-    </div>
-    """
-    st.markdown(kpi_html, unsafe_allow_html=True)
+        """
+    )
 
 
-def create_severity_bar_chart(df) -> go.Figure:
-    """Create stacked bar chart of severity per service with designated palette."""
+def _service_health(svc: dict) -> str:
+    total = int(svc.get("total_logs", 0) or 0)
+    errors = int(svc.get("error_count", 0) or 0)
+    critical = int(svc.get("critical_count", 0) or 0)
+    raw = str(svc.get("health", "")).lower()
+    if raw in ("critical", "degraded", "healthy"):
+        return raw
+    if critical > 0 or (total > 0 and (errors / total) > 0.05):
+        return "critical"
+    if errors > 0:
+        return "degraded"
+    return "healthy"
+
+
+def render_service_cards(services: list[dict]) -> None:
+    """Render microservice health card grid with embedded error rate meters."""
+    cards = ['<div class="service-grid">']
+    for svc in services:
+        name = svc.get("service_name", "unknown")
+        total = int(svc.get("total_logs", 0) or 0)
+        errors = int(svc.get("error_count", 0) or 0)
+        critical = int(svc.get("critical_count", 0) or 0)
+        health = _service_health(svc)
+
+        error_rate = (errors / total * 100) if total > 0 else 0.0
+        fill = min(error_rate * 5, 100)
+        color = {"healthy": "#10B981", "degraded": "#F59E0B"}.get(health, "#EF4444")
+        crit_color = "#EF4444" if critical > 0 else "inherit"
+        top_err = svc.get("top_error") or "No operational errors recorded"
+
+        cards.append(
+            f"""
+            <div class="service-card">
+                <div class="service-card-header">
+                    <span class="service-name">{_esc(name)}</span>
+                    <span class="badge badge-{health}">● {health.capitalize()}</span>
+                </div>
+                <div class="service-metric-row"><span class="service-metric-label">Processed volume</span><span class="service-metric-val">{total:,}</span></div>
+                <div class="service-metric-row"><span class="service-metric-label">Error frequency</span><span class="service-metric-val">{errors:,} ({error_rate:.2f}%)</span></div>
+                <div class="service-metric-row"><span class="service-metric-label">Critical alerts</span><span class="service-metric-val" style="color:{crit_color};">{critical:,}</span></div>
+                <div class="meter-container"><div class="meter-track"><div class="meter-fill" style="width:{fill:.1f}%;background:{color};"></div></div></div>
+                <div class="service-top-error" title="{_esc(top_err)}">🔍 {_esc(top_err)}</div>
+            </div>
+            """
+        )
+    cards.append("</div>")
+    _html("".join(cards))
+
+
+def render_status_badge(status: str) -> str:
+    """Return HTML markup for an operational status pill badge with icon."""
+    key = str(status or "unknown").lower()
+    cfg = STATUS_CONFIG.get(key, {"label": key.capitalize(), "class": "badge-queued", "icon": "•"})
+    return f'<span class="badge {cfg["class"]}"><span>{cfg["icon"]}</span><span>{cfg["label"]}</span></span>'
+
+
+# ==============================================================================
+# Interactive Charts (Plotly)
+# ==============================================================================
+def _axis(p: dict, title: str = "", grid: bool = True) -> dict:
+    return dict(
+        title=title,
+        tickfont=dict(family="IBM Plex Mono", size=11, color=p["muted"]),
+        title_font=dict(color=p["muted"]),
+        showgrid=grid,
+        gridcolor=p["grid"],
+        zeroline=False,
+        linecolor=p["border"],
+    )
+
+
+def _base_layout(p: dict, height: int, top: int = 25) -> dict:
+    return dict(
+        height=height,
+        margin=dict(l=15, r=15, t=top, b=25),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, sans-serif", size=12, color=p["ink"]),
+        hoverlabel=dict(bgcolor=p["surface"], bordercolor=p["border"], font=dict(color=p["ink"], family="Inter, sans-serif")),
+        legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="right", x=1, title_text="", font=dict(color=p["ink"])),
+    )
+
+
+def create_severity_bar_chart(df: pd.DataFrame) -> go.Figure:
+    """Stacked bar chart of severity per service."""
+    p = _p()
     fig = go.Figure()
-
     services = df["service_name"].tolist() if "service_name" in df else []
-
-    # Map severity levels and colors
     categories = [
         ("INFO", "info_count", SEVERITY_COLORS["INFO"]),
         ("WARN", "warning_count", SEVERITY_COLORS["WARN"]),
         ("ERROR", "error_count", SEVERITY_COLORS["ERROR"]),
         ("CRITICAL", "critical_count", SEVERITY_COLORS["CRITICAL"]),
     ]
-
     for label, col, color in categories:
         values = df[col].tolist() if col in df else [0] * len(services)
         fig.add_trace(
@@ -490,561 +532,352 @@ def create_severity_bar_chart(df) -> go.Figure:
                 name=label,
                 x=services,
                 y=values,
-                marker=dict(color=color, line=dict(color="#FFFFFF", width=0.5)),
+                marker=dict(color=color, line=dict(color=p["surface"], width=0.8)),
                 hovertemplate=f"<b>%{{x}}</b><br>{label}: %{{y:,}}<extra></extra>",
             )
         )
-
     fig.update_layout(
+        **_base_layout(p, 330),
         barmode="stack",
-        height=320,
-        margin=dict(l=20, r=20, t=25, b=30),
-        plot_bgcolor="#FFFFFF",
-        paper_bgcolor="#FFFFFF",
-        font=dict(family="IBM Plex Sans, sans-serif", size=12, color=COLOR_INK),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            title_text="",
-        ),
-        xaxis=dict(
-            title="",
-            tickfont=dict(size=12, color=COLOR_INK),
-            showgrid=False,
-            linecolor=COLOR_BORDER,
-        ),
-        yaxis=dict(
-            title="Log count",
-            tickfont=dict(family="IBM Plex Mono", size=11, color=COLOR_INK),
-            showgrid=True,
-            gridcolor="#EEF1F4",
-            zeroline=False,
-            linecolor=COLOR_BORDER,
-        ),
+        xaxis=_axis(p, grid=False),
+        yaxis=_axis(p, "Log volume"),
     )
     return fig
 
 
-def render_service_cards(services: list[dict]) -> None:
-    """Render service health card for each microservice."""
-    cards_html = ['<div class="service-grid">']
-    for svc in services:
-        name = svc.get("service_name", "unknown")
-        total = int(svc.get("total_logs", 0))
-        errors = int(svc.get("error_count", 0))
-        critical = int(svc.get("critical_count", 0))
-
-        # Derive health badge
-        raw_health = str(svc.get("health", "")).lower()
-        if raw_health in ("critical", "degraded", "healthy"):
-            health = raw_health
-        else:
-            if critical > 0 or (total > 0 and (errors / total) > 0.05):
-                health = "critical"
-            elif errors > 0:
-                health = "degraded"
-            else:
-                health = "healthy"
-
-        health_badge_class = f"badge-{health}"
-        health_label = health.capitalize()
-
-        error_rate = (errors / total * 100) if total > 0 else 0.0
-        top_err = svc.get("top_error") or "No errors recorded"
-
-        card = f"""
-        <div class="service-card">
-            <div class="service-card-header">
-                <span class="service-name">{html.escape(name)}</span>
-                <span class="badge {health_badge_class}">{health_label}</span>
-            </div>
-            <div class="service-metric-row">
-                <span class="service-metric-label">Total logs</span>
-                <span class="service-metric-val">{total:,}</span>
-            </div>
-            <div class="service-metric-row">
-                <span class="service-metric-label">Error rate</span>
-                <span class="service-metric-val">{error_rate:.2f}%</span>
-            </div>
-            <div class="service-metric-row">
-                <span class="service-metric-label">Critical issues</span>
-                <span class="service-metric-val">{critical:,}</span>
-            </div>
-            <div class="service-top-error" title="{html.escape(top_err)}">
-                {html.escape(top_err)}
-            </div>
-        </div>
-        """
-        cards_html.append(card)
-
-    cards_html.append("</div>")
-    st.markdown("".join(cards_html), unsafe_allow_html=True)
+def create_severity_donut_chart(total_logs: int, errors: int, warnings: int, critical: int, info: int) -> go.Figure:
+    """Donut chart of aggregate severity with fault-free percentage in the centre."""
+    p = _p()
+    labels = ["INFO", "WARN", "ERROR", "CRITICAL"]
+    values = [info, warnings, errors, critical]
+    fig = go.Figure(
+        go.Pie(
+            labels=labels,
+            values=values,
+            hole=0.7,
+            sort=False,
+            direction="clockwise",
+            marker=dict(colors=[SEVERITY_COLORS[k] for k in labels], line=dict(color=p["surface"], width=2)),
+            textinfo="none",
+            hovertemplate="<b>%{label}</b><br>%{value:,} (%{percent})<extra></extra>",
+        )
+    )
+    fault_free = 100.0 if total_logs <= 0 else max(0.0, 100.0 - (errors + critical) / total_logs * 100)
+    layout = _base_layout(p, 330, top=10)
+    layout["legend"] = dict(orientation="h", yanchor="top", y=-0.02, xanchor="center", x=0.5, font=dict(color=p["ink"]))
+    fig.update_layout(
+        **layout,
+        annotations=[
+            dict(
+                text=f"<b>{fault_free:.2f}%</b><br><span style='font-size:11px;color:{p['muted']}'>fault-free</span>",
+                x=0.5,
+                y=0.5,
+                showarrow=False,
+                font=dict(size=24, family="IBM Plex Mono", color=p["ink"]),
+            )
+        ],
+    )
+    return fig
 
 
-def render_status_badge(status: str) -> str:
-    """Return HTML markup for a colored status badge."""
-    cfg = STATUS_CONFIG.get(status.lower(), {"label": status.capitalize(), "class": "badge-queued"})
-    return f'<span class="badge {cfg["class"]}">{cfg["label"]}</span>'
+def create_error_timeline_chart(timeline_df: pd.DataFrame) -> go.Figure:
+    """Area spline chart of severity breakdown over time."""
+    p = _p()
+    fig = go.Figure()
+    if timeline_df.empty or "timestamp" not in timeline_df:
+        return fig
+
+    traces = [
+        ("INFO", "info", SEVERITY_COLORS["INFO"], "rgba(2, 132, 199, 0.12)"),
+        ("WARN", "warn", SEVERITY_COLORS["WARN"], "rgba(245, 158, 11, 0.16)"),
+        ("ERROR", "error", SEVERITY_COLORS["ERROR"], "rgba(239, 68, 68, 0.24)"),
+        ("CRITICAL", "critical", SEVERITY_COLORS["CRITICAL"], "rgba(185, 28, 28, 0.32)"),
+    ]
+    for label, col, line_color, fill_color in traces:
+        if col in timeline_df:
+            fig.add_trace(
+                go.Scatter(
+                    name=label,
+                    x=timeline_df["timestamp"],
+                    y=timeline_df[col],
+                    mode="lines",
+                    line=dict(shape="spline", width=2, color=line_color),
+                    fill="tozeroy",
+                    fillcolor=fill_color,
+                    hovertemplate=f"<b>{label}</b>: %{{y:,}}<extra></extra>",
+                )
+            )
+    fig.update_layout(
+        **_base_layout(p, 340, top=35),
+        hovermode="x unified",
+        xaxis=_axis(p, grid=False),
+        yaxis=_axis(p, "Events / hour"),
+    )
+    return fig
+
+
+def generate_demo_timeline_data(summary_data: list[dict] | None = None, hours: int = 24) -> pd.DataFrame:
+    """Build a deterministic hourly severity timeline from aggregate counters."""
+    summary_data = summary_data or []
+
+    def _tot(key: str) -> int:
+        total = 0
+        for item in summary_data:
+            try:
+                total += int(float(item.get(key, 0) or 0))
+            except (TypeError, ValueError):
+                continue
+        return total
+
+    total, err, warn, crit = _tot("total_logs"), _tot("error_count"), _tot("warning_count"), _tot("critical_count")
+    if total <= 0:
+        total = 48000
+        err, warn, crit = int(total * 0.02), int(total * 0.06), int(total * 0.004)
+
+    rng = np.random.default_rng((total + err * 7 + warn * 13 + crit * 31) % (2**32))
+    x = np.arange(hours)
+    per_hour = (total / hours) * (1 + 0.35 * np.sin((x - 6) / hours * 2 * np.pi))
+
+    r_err, r_warn, r_crit = err / total, warn / total, crit / total
+    r_info = max(0.0, 1 - r_err - r_warn - r_crit)
+
+    info = rng.poisson(per_hour * r_info)
+    warn_s = rng.poisson(per_hour * r_warn)
+    err_s = rng.poisson(per_hour * r_err).astype(float)
+    crit_s = rng.poisson(per_hour * r_crit).astype(float)
+
+    spike = int(rng.integers(hours // 2, hours - 2))
+    err_s[spike] *= 3
+    crit_s[spike] += max(1, int(crit_s.mean()))
+
+    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    stamps = [end - timedelta(hours=hours - 1 - i) for i in range(hours)]
+    return pd.DataFrame(
+        {
+            "timestamp": stamps,
+            "info": info.astype(int),
+            "warn": warn_s.astype(int),
+            "error": err_s.astype(int),
+            "critical": crit_s.astype(int),
+        }
+    )
+
+
+# ==============================================================================
+# Pipeline stepper, empty state, tables
+# ==============================================================================
+_PIPELINE_STEPS = [
+    ("Gateway", "Validated & archived"),
+    ("Queue", "Buffered in broker"),
+    ("Worker", "Parsing & aggregating"),
+    ("Result", "Metrics persisted"),
+]
+
+_STEP_STATES = {
+    "upcoming": ["idle", "idle", "idle", "idle"],
+    "pending": ["done", "active", "idle", "idle"],
+    "processing": ["done", "done", "pulsing", "idle"],
+    "completed": ["done", "done", "done", "done"],
+    "failed": ["done", "done", "failed", "idle"],
+}
 
 
 def render_pipeline_stepper(status: str) -> None:
-    """Render horizontal stepper showing pipeline lifecycle stages."""
-    norm_status = status.lower()
+    """Horizontal stepper showing gateway → queue → worker → result progression."""
+    key = str(status or "upcoming").lower()
+    states = _STEP_STATES.get(key, _STEP_STATES["upcoming"])
 
-    # Step states: 'done', 'active', 'pulsing', 'failed', 'upcoming'
-    if norm_status == "pending":
-        s1, s2, s3, s4 = "done", "active", "upcoming", "upcoming"
-        fill_width = "33%"
-        s4_label, s4_sub = "Completed", "Store metrics"
-    elif norm_status == "processing":
-        s1, s2, s3, s4 = "done", "done", "pulsing", "upcoming"
-        fill_width = "66%"
-        s4_label, s4_sub = "Completed", "Store metrics"
-    elif norm_status == "completed":
-        s1, s2, s3, s4 = "done", "done", "done", "done"
-        fill_width = "100%"
-        s4_label, s4_sub = "Completed", "Metrics saved"
-    elif norm_status == "failed":
-        s1, s2, s3, s4 = "done", "done", "done", "failed"
-        fill_width = "100%"
-        s4_label, s4_sub = "Failed", "Exception caught"
-    else:
-        s1, s2, s3, s4 = "upcoming", "upcoming", "upcoming", "upcoming"
-        fill_width = "0%"
-        s4_label, s4_sub = "Completed", "Store metrics"
+    last_lit = max((i for i, s in enumerate(states) if s != "idle"), default=-1)
+    fill_pct = 0 if last_lit <= 0 else last_lit / (len(states) - 1) * 100
 
-    stepper_html = f"""
-    <div class="stepper-container">
-        <div class="stepper-title">Ingestion pipeline lifecycle progression</div>
-        <div class="stepper-track">
-            <div class="stepper-line">
-                <div class="stepper-line-fill" style="width: {fill_width};"></div>
-            </div>
-            <div class="stepper-step step-{s1}">
-                <div class="step-circle">1</div>
-                <div class="step-label">Uploaded</div>
-                <div class="step-caption">Client sent batch</div>
-            </div>
-            <div class="stepper-step step-{s2}">
-                <div class="step-circle">2</div>
-                <div class="step-label">Queued</div>
-                <div class="step-caption">In S3 & broker</div>
-            </div>
-            <div class="stepper-step step-{s3}">
-                <div class="step-circle">3</div>
-                <div class="step-label">Processing</div>
-                <div class="step-caption">Worker parsing</div>
-            </div>
-            <div class="stepper-step step-{s4}">
-                <div class="step-circle">4</div>
-                <div class="step-label">{s4_label}</div>
-                <div class="step-caption">{s4_sub}</div>
+    steps_html = []
+    for i, ((label, caption), state) in enumerate(zip(_PIPELINE_STEPS, states)):
+        symbol = "✓" if state == "done" else "✕" if state == "failed" else str(i + 1)
+        steps_html.append(
+            f'<div class="stepper-step step-{state}"><div class="step-circle">{symbol}</div>'
+            f'<div class="step-label">{label}</div><div class="step-caption">{caption}</div></div>'
+        )
+
+    badge = render_status_badge(key) if key in STATUS_CONFIG else ""
+    _html(
+        f"""
+        <div class="stepper-container">
+            <div class="stepper-head"><span class="stepper-title">Pipeline Progression</span>{badge}</div>
+            <div class="stepper-track">
+                <div class="stepper-line"><div class="stepper-line-fill" style="width:{fill_pct:.0f}%;"></div></div>
+                {"".join(steps_html)}
             </div>
         </div>
-    </div>
-    """
-    st.markdown(stepper_html, unsafe_allow_html=True)
+        """
+    )
 
 
-def get_stretch_kwarg(widget_func) -> dict:
-    """Return width='stretch' if supported by the installed Streamlit version, else use_container_width=True."""
-    import inspect
-    if "width" in inspect.signature(widget_func).parameters:
-        return {"width": "stretch"}
-    return {"use_container_width": True}
+def render_empty_state(message: str, action_label: str | None = None, title: str = "Nothing here yet") -> None:
+    action = f'<div class="empty-state-action">👉 {_esc(action_label)}</div>' if action_label else ""
+    _html(
+        f"""
+        <div class="empty-state-box">
+            <div class="empty-state-icon">📡</div>
+            <div class="empty-state-title">{_esc(title)}</div>
+            <div class="empty-state-text">{_esc(message)}</div>
+            {action}
+        </div>
+        """
+    )
 
 
-def render_architecture_diagram() -> None:
-    """Render the architecture diagram using Graphviz via st.graphviz_chart."""
-    dot_graph = f"""
-    digraph DistributedPipeline {{
-        rankdir=LR;
-        bgcolor="transparent";
-        node [shape=box, style="filled,rounded", fontname="IBM Plex Sans, sans-serif", fontsize=11, margin="0.25,0.12"];
-        edge [fontname="IBM Plex Sans, sans-serif", fontsize=9, color="{COLOR_PRIMARY}", fontcolor="{COLOR_INK}", arrowsize=0.7];
-
-        dashboard [label="Dashboard UI\\n(Streamlit Console)", fillcolor="#FFFFFF", color="{COLOR_PRIMARY}", penwidth=1.5];
-        api [label="Ingestion API\\n(FastAPI Gateway)", fillcolor="#E8ECF1", color="{COLOR_PRIMARY}", penwidth=1.5];
-        storage [label="Object Storage\\n(MinIO / AWS S3)", fillcolor="#FFFFFF", color="{SEVERITY_COLORS['INFO']}", penwidth=1.5];
-        queue [label="Message Queue\\n(RabbitMQ / AWS SQS)", fillcolor="#FFFFFF", color="{SEVERITY_COLORS['WARN']}", penwidth=1.5];
-        worker [label="Worker Pool\\n(Python Consumers)", fillcolor="#E8ECF1", color="{COLOR_PRIMARY}", penwidth=1.5];
-        db [label="Metadata DB\\n(MongoDB / DynamoDB)", fillcolor="#FFFFFF", color="{COLOR_SUCCESS}", penwidth=1.5];
-
-        dashboard -> api [label="POST /logs/upload\\n(file, service, env)"];
-        api -> storage [label="Save raw archive\\n(immutable key)"];
-        api -> db [label="Init batch record\\n(status: pending)"];
-        api -> queue [label="Enqueue task\\n(ingest_id)"];
-        queue -> worker [label="Dispatch task\\n(ack on success)"];
-        worker -> storage [label="Fetch & stream\\nJSON Lines"];
-        worker -> db [label="Write computed\\nmetrics & status"];
-        dashboard -> db [label="Poll metrics & status\\n(non-blocking)", style=dashed, color="{SEVERITY_COLORS['INFO']}"];
-    }}
-    """
-    st.graphviz_chart(dot_graph, **get_stretch_kwarg(st.graphviz_chart))
-
-
-def render_empty_state(message: str, action_label: str | None = None) -> None:
-    """Render clean, operations-grade empty state."""
-    btn_html = ""
-    if action_label:
-        btn_html = f'<div style="margin-top: 0.8rem; font-size: 0.82rem; color: {COLOR_PRIMARY}; font-weight: 500;">Tip: {html.escape(action_label)}</div>'
-
-    html_code = f"""
-    <div class="empty-state-box">
-        <div class="empty-state-title">No telemetry data available</div>
-        <div class="empty-state-text">{html.escape(message)}</div>
-        {btn_html}
-    </div>
-    """
-    st.markdown(html_code, unsafe_allow_html=True)
+def _env_pill(env) -> str:
+    env_s = str(env or "prod").lower()
+    cls = f"env-{env_s}" if env_s in ("prod", "staging", "dev") else ""
+    return f'<span class="env-pill {cls}">{_esc(env_s)}</span>'
 
 
 def render_ingestion_table(rows: list[dict]) -> None:
-    """Render plain operations console table for session ingestions with status badges."""
-    table_css = f"""
-    <style>
-    .ops-table {{
-        width: 100%;
-        border-collapse: collapse;
-        margin: 1rem 0;
-        font-size: 0.85rem;
-        background: #FFFFFF;
-        border: 1px solid {COLOR_BORDER};
-        border-radius: 6px;
-        overflow: hidden;
-    }}
-    .ops-table th {{
-        background-color: #F8FAFC;
-        color: #475569;
-        font-weight: 600;
-        text-align: left;
-        padding: 0.7rem 0.85rem;
-        border-bottom: 1px solid {COLOR_BORDER};
-        font-size: 0.78rem;
-        text-transform: none;
-    }}
-    .ops-table td {{
-        padding: 0.65rem 0.85rem;
-        border-bottom: 1px solid #EEF1F4;
-        color: {COLOR_INK};
-    }}
-    .ops-table tr:last-child td {{
-        border-bottom: none;
-    }}
-    .ops-table tr:hover {{
-        background-color: #F8FAFC;
-    }}
-    .ops-table .num-col {{
-        font-family: 'IBM Plex Mono', monospace;
-        text-align: right;
-    }}
-    .ops-table th.num-col {{
-        text-align: right;
-    }}
-    </style>
-    """
-
-    headers = [
-        "Ingestion ID",
-        "Service",
-        "Environment",
-        "Submitted (UTC)",
-        "Status",
-        "Total logs",
-        "Errors",
-        "Warnings",
-        "Critical",
-        "Failure reason",
-    ]
-    th_html = "".join(f'<th class="{"num-col" if "logs" in h.lower() or "error" in h.lower() or "warning" in h.lower() or "critical" in h.lower() else ""}">{h}</th>' for h in headers)
-
-    tr_html = []
+    """Session ingestion history as a theme-aware HTML table."""
+    body = []
     for r in rows:
-        ingest_id = r.get("ingest_id", "")
-        short_id = ingest_id[:8] + "..." if len(ingest_id) > 8 else ingest_id
-        svc = html.escape(str(r.get("service_name", "")))
-        env = html.escape(str(r.get("environment", "")))
-        sub = html.escape(str(r.get("submitted_at", "")))
-        badge = render_status_badge(r.get("status", "unknown"))
+        iid = str(r.get("ingest_id") or "")
+        reason = r.get("error_reason")
+        errors = r.get("error_count")
+        err_cls = "num err-hot" if (isinstance(errors, (int, float)) and errors > 0) else "num"
+        body.append(
+            "<tr>"
+            f'<td class="mono-cell" title="{_esc(iid)}">{_esc(iid[:8])}…</td>'
+            f"<td>{_esc(r.get('service_name'))}</td>"
+            f"<td>{_env_pill(r.get('environment'))}</td>"
+            f'<td class="mono-cell">{_esc(r.get("submitted_at") or "—")}</td>'
+            f"<td>{render_status_badge(r.get('status', 'unknown'))}</td>"
+            f'<td class="num">{_fmt_num(r.get("total_logs"))}</td>'
+            f'<td class="{err_cls}">{_fmt_num(errors)}</td>'
+            f'<td class="num">{_fmt_num(r.get("warning_count"))}</td>'
+            f'<td class="num">{_fmt_num(r.get("critical_count"))}</td>'
+            f'<td><div class="trunc" title="{_esc(reason)}">{_esc(reason) if reason else "—"}</div></td>'
+            "</tr>"
+        )
+    _html(
+        '<div class="tbl-wrap"><table class="tbl"><thead><tr>'
+        "<th>Batch</th><th>Service</th><th>Env</th><th>Submitted (UTC)</th><th>Status</th>"
+        '<th class="num">Logs</th><th class="num">Errors</th><th class="num">Warnings</th>'
+        '<th class="num">Critical</th><th>Notes</th>'
+        f"</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
+    )
 
-        tot = f"{r['total_logs']:,}" if r.get("total_logs") is not None else "-"
-        err = f"{r['error_count']:,}" if r.get("error_count") is not None else "-"
-        warn = f"{r['warning_count']:,}" if r.get("warning_count") is not None else "-"
-        crit = f"{r['critical_count']:,}" if r.get("critical_count") is not None else "-"
-        reason = html.escape(str(r.get("error_reason") or "-"))
 
-        row_str = f"""
-        <tr>
-            <td style="font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; font-weight: 500;" title="{html.escape(ingest_id)}">{short_id}</td>
-            <td>{svc}</td>
-            <td>{env}</td>
-            <td style="font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem;">{sub}</td>
-            <td>{badge}</td>
-            <td class="num-col">{tot}</td>
-            <td class="num-col">{err}</td>
-            <td class="num-col">{warn}</td>
-            <td class="num-col">{crit}</td>
-            <td style="color: {SEVERITY_COLORS['ERROR'] if reason != '-' else '#718299'}; font-size: 0.8rem;">{reason}</td>
-        </tr>
+def render_top_errors_table(services: list[dict]) -> None:
+    """Top error signature per service."""
+    ordered = sorted(services, key=lambda s: int(s.get("error_count", 0) or 0), reverse=True)
+    body = []
+    for svc in ordered:
+        total = int(svc.get("total_logs", 0) or 0)
+        errors = int(svc.get("error_count", 0) or 0)
+        critical = int(svc.get("critical_count", 0) or 0)
+        rate = (errors / total * 100) if total else 0.0
+        top = svc.get("top_error") or "—"
+        err_cls = "num err-hot" if errors > 0 else "num"
+        body.append(
+            "<tr>"
+            f'<td><b>{_esc(svc.get("service_name", "unknown"))}</b></td>'
+            f'<td><div class="trunc" title="{_esc(top)}">{_esc(top)}</div></td>'
+            f'<td class="{err_cls}">{errors:,}</td>'
+            f'<td class="num">{critical:,}</td>'
+            f'<td class="num">{rate:.2f}%</td>'
+            f"<td>{_health_badge(svc)}</td>"
+            "</tr>"
+        )
+    _html(
+        '<div class="tbl-wrap"><table class="tbl"><thead><tr>'
+        '<th>Service</th><th>Top error signature</th><th class="num">Errors</th>'
+        '<th class="num">Critical</th><th class="num">Error rate</th><th>Health</th>'
+        f"</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
+    )
+
+
+def _health_badge(svc: dict) -> str:
+    health = _service_health(svc)
+    return f'<span class="badge badge-{health}">● {health.capitalize()}</span>'
+
+
+def render_batch_detail(record: dict) -> None:
+    """Diagnostic card for a single ingestion batch."""
+    record = record or {}
+    metrics = record.get("metrics") or record
+    status = str(record.get("status", "unknown")).lower()
+    reason = record.get("error_reason")
+
+    stats = [
+        ("Total logs", metrics.get("total_logs")),
+        ("Errors", metrics.get("error_count")),
+        ("Warnings", metrics.get("warning_count")),
+        ("Critical", metrics.get("critical_count")),
+    ]
+    stats_html = "".join(
+        f'<div class="detail-stat"><div class="detail-stat-label">{label}</div><div class="detail-stat-val">{_fmt_num(val)}</div></div>'
+        for label, val in stats
+    )
+    reason_html = f'<div class="detail-error"><b>Root cause:</b> {_esc(reason)}</div>' if reason else ""
+
+    _html(
+        f"""
+        <div class="detail-card">
+            <div class="detail-head">
+                <div>
+                    <div class="detail-id">{_esc(record.get("ingest_id", "—"))}</div>
+                    <div class="detail-meta">{_esc(record.get("service_name", "unknown"))} · {_esc(record.get("environment", "prod"))}</div>
+                </div>
+                {render_status_badge(status)}
+            </div>
+            <div class="detail-stats">{stats_html}</div>
+            {reason_html}
+        </div>
         """
-        tr_html.append(row_str)
-
-    html_table = f"""
-    {table_css}
-    <div style="overflow-x: auto;">
-        <table class="ops-table">
-            <thead>
-                <tr>{th_html}</tr>
-            </thead>
-            <tbody>
-                {''.join(tr_html)}
-            </tbody>
-        </table>
-    </div>
-    """
-    st.markdown(html_table, unsafe_allow_html=True)
+    )
+    with st.expander("Raw record"):
+        raw = json.dumps(record, indent=2, default=str)
+        st.markdown(f'<pre class="raw-pre">{html.escape(raw)}</pre>', unsafe_allow_html=True)
 
 
-def render_top_errors_table(summary: list[dict]) -> None:
-    """Render plain table for top error per service in the Overview section."""
-    rows = []
-    for s in summary:
-        svc = html.escape(str(s.get("service_name", "")))
-        top = html.escape(str(s.get("top_error") or "No errors recorded"))
-        errs = int(s.get("error_count", 0))
-        crit = int(s.get("critical_count", 0))
-        tot = int(s.get("total_logs", 0))
-
-        raw_health = str(s.get("health", "")).lower()
-        if raw_health in ("critical", "degraded", "healthy"):
-            health = raw_health
-        else:
-            if crit > 0 or (tot > 0 and (errs / tot) > 0.05):
-                health = "critical"
-            elif errs > 0:
-                health = "degraded"
-            else:
-                health = "healthy"
-
-        badge = f'<span class="badge badge-{health}">{health.capitalize()}</span>'
-
-        rows.append(f"""
-        <tr>
-            <td style="font-weight: 600; color: {COLOR_PRIMARY};">{svc}</td>
-            <td style="font-family: 'IBM Plex Mono', monospace; font-size: 0.82rem; color: #334155;">{top}</td>
-            <td class="num-col">{errs:,}</td>
-            <td class="num-col" style="color: {SEVERITY_COLORS['CRITICAL'] if crit > 0 else COLOR_INK}; font-weight: {600 if crit > 0 else 400};">{crit:,}</td>
-            <td>{badge}</td>
-        </tr>
-        """)
-
-    table_html = f"""
-    <div style="overflow-x: auto;">
-        <table class="ops-table">
-            <thead>
-                <tr>
-                    <th>Service</th>
-                    <th>Top error message</th>
-                    <th class="num-col">Errors</th>
-                    <th class="num-col">Critical</th>
-                    <th>Service health</th>
-                </tr>
-            </thead>
-            <tbody>
-                {''.join(rows)}
-            </tbody>
-        </table>
-    </div>
-    """
-    st.markdown(table_html, unsafe_allow_html=True)
-
-
-def render_batch_detail(rec: dict) -> None:
-    """Render comprehensive detailed record report for an ingestion batch."""
-    if not rec:
-        st.warning("No record details provided.")
-        return
-
-    ingest_id = rec.get("ingest_id", "-")
-    status = rec.get("status", "unknown")
-    service_name = rec.get("service_name", "-")
-    environment = rec.get("environment", "-")
-    object_key = rec.get("object_key", "-")
-    created = rec.get("created_at") or "-"
-    started = rec.get("processing_started_at") or "-"
-    processed = rec.get("processed_at") or "-"
-    err_reason = rec.get("error_reason")
-    top_error = rec.get("top_error")
-    metrics = rec.get("metrics") or {}
-    report = rec.get("report") or {}
-
-    health = report.get("health") or ("failed" if status == "failed" else "pending")
-
-    # 1. Header & Stepper
-    st.markdown(f"### Ingestion Report: `{ingest_id}`")
-    render_pipeline_stepper(status)
-
-    # 2. Key Metadata Columns
-    m1, m2, m3, m4 = st.columns(4)
-    m1.markdown(f"**Service:** `{service_name}`")
-    m2.markdown(f"**Environment:** `{environment}`")
-    m3.markdown(f"**Status:** {render_status_badge(status)}", unsafe_allow_html=True)
-    if health and health != "pending":
-        h_badge_class = f"badge-{health.lower()}"
-        m4.markdown(f"**Health:** <span class='badge {h_badge_class}'>{health.capitalize()}</span>", unsafe_allow_html=True)
-    else:
-        m4.markdown(f"**Health:** `{health.capitalize()}`")
-
-    # 3. Metrics Summary Cards
-    st.markdown("#### Summary Metrics")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Total Logs", f"{metrics.get('total_logs', 0):,}" if metrics else "-")
-    c2.metric("Info Logs", f"{metrics.get('info_count', 0):,}" if metrics else "-")
-    c3.metric("Warnings", f"{metrics.get('warning_count', 0):,}" if metrics else "-")
-    c4.metric("Errors", f"{metrics.get('error_count', 0):,}" if metrics else "-")
-    c5.metric("Critical", f"{metrics.get('critical_count', 0):,}" if metrics else "-")
-
-    # Timestamps & Storage path
-    st.caption(f"**Created:** {created} | **Started:** {started} | **Processed:** {processed}")
-    st.caption(f"**Object Key (MinIO/S3):** `{object_key}`")
-
-    # 4. Error Reason / Top Error Highlighting
-    if err_reason:
-        st.error(f"**Pipeline Failure Reason:** {err_reason}")
-
-    if top_error:
-        st.warning(f"**Top Frequent Error:** {top_error}")
-
-    # 5. Rule Findings (if any)
-    findings = report.get("findings") or []
-    if findings:
-        st.markdown("#### Audit Rule Findings & Diagnostics")
-        for f in findings:
-            f_title = f.get("title", f.get("id", "Finding"))
-            f_sev = f.get("severity", "warning").lower()
-            f_count = f.get("count", 1)
-            f_hint = f.get("hint", "")
-            f_example = f.get("example", "")
-
-            sev_badge = f'<span class="badge badge-{"critical" if f_sev == "error" else "degraded" if f_sev == "warning" else "completed"}">{f_sev.upper()}</span>'
-
-            with st.container():
-                st.markdown(
-                    f"**{f_title}** ({f_count} occurrence{'s' if f_count != 1 else ''}) {sev_badge}",
-                    unsafe_allow_html=True
-                )
-                if f_hint:
-                    st.info(f"**Diagnostic Hint:** {f_hint}")
-                if f_example:
-                    st.code(f_example, language="text")
-                st.divider()
-
-    # 6. Error Samples & Stack Traces
-    error_samples = report.get("error_samples") or []
-    if error_samples:
-        st.markdown("#### Error Samples & Stack Traces")
-        for idx, sample in enumerate(error_samples, start=1):
-            ts = sample.get("timestamp", "-")
-            logger_name = sample.get("logger", "-")
-            msg = sample.get("message", "-")
-            stack_trace = sample.get("stack_trace_head") or sample.get("stack_trace")
-
-            with st.expander(f"Error Sample #{idx}: [{logger_name}] {msg[:80]}...", expanded=(idx == 1)):
-                st.markdown(f"**Timestamp:** `{ts}`")
-                st.markdown(f"**Logger:** `{logger_name}`")
-                st.markdown(f"**Message:** {msg}")
-                if stack_trace:
-                    st.markdown("**Stack Trace:**")
-                    st.code(stack_trace, language="text")
-
-    # 7. Top Errors & Top Warnings Tables
-    top_errors = report.get("top_errors") or []
-    top_warnings = report.get("top_warnings") or []
-    top_sources = report.get("top_sources") or []
-
-    if top_errors or top_warnings or top_sources:
-        tab_err, tab_warn, tab_src = st.tabs(["Top Errors", "Top Warnings", "Top Loggers"])
-
-        with tab_err:
-            if top_errors:
-                err_df_data = [{"Count": e.get("count", 0), "Message": e.get("message", "")} for e in top_errors]
-                st.dataframe(err_df_data, **get_stretch_kwarg(st.dataframe))
-            else:
-                st.write("No errors recorded.")
-
-        with tab_warn:
-            if top_warnings:
-                warn_df_data = [{"Count": w.get("count", 0), "Message": w.get("message", "")} for w in top_warnings]
-                st.dataframe(warn_df_data, **get_stretch_kwarg(st.dataframe))
-            else:
-                st.write("No warnings recorded.")
-
-        with tab_src:
-            if top_sources:
-                src_df_data = [{"Count": s.get("count", 0), "Logger Source": s.get("logger", "")} for s in top_sources]
-                st.dataframe(src_df_data, **get_stretch_kwarg(st.dataframe))
-            else:
-                st.write("No logger sources recorded.")
-
-    # 8. Time Range & Skipped Lines
-    time_range = report.get("time_range") or {}
-    if time_range:
-        st.caption(f"**Time Window:** First log at `{time_range.get('first', '-')}` | Last log at `{time_range.get('last', '-')}`")
-
-    # 9. Complete Raw Record Viewer
-    with st.expander("View Full Ingestion Document (JSON)", expanded=False):
-        st.json(rec)
+# ==============================================================================
+# Architecture page
+# ==============================================================================
+def render_architecture_diagram() -> None:
+    nodes = [
+        ("📡", "Log Producers", "Microservices"),
+        ("🚪", "API Gateway", "FastAPI · HTTP 201"),
+        ("🗄️", "Object Store", "S3 / MinIO"),
+        ("📬", "Message Broker", "RabbitMQ / SQS"),
+        ("⚙️", "Worker Pool", "Parallel consumers"),
+        ("📊", "Metrics Store", "Document DB"),
+    ]
+    parts = []
+    for i, (icon, title, tech) in enumerate(nodes):
+        if i:
+            parts.append('<div class="flow-arrow">→</div>')
+        parts.append(
+            f'<div class="flow-node"><div class="flow-icon">{icon}</div>'
+            f'<div class="flow-title">{title}</div><div class="flow-tech">{tech}</div></div>'
+        )
+    _html(
+        f"""
+        <div class="flow">{"".join(parts)}</div>
+        <div class="flow-note"><b>Failure path:</b> messages that fail 3 consecutive retries are routed to the
+        <b>Dead Letter Queue</b> and the batch metadata is marked <b>status: failed</b> with a root-cause reason.</div>
+        """
+    )
 
 
 def render_architecture_stages() -> None:
-    """Render the 6 pipeline stages with one-line captions for viva defense."""
     stages = [
-        (
-            "1. Dashboard UI",
-            "Streamlit (Python)",
-            "Observability console providing real-time telemetry analytics, multi-environment log ingestion, and batch lifecycle tracking.",
-        ),
-        (
-            "2. Ingestion API",
-            "FastAPI Gateway",
-            "Stateless REST gateway validating incoming JSONL archives, archiving raw files to storage, and returning 201 Created immediately.",
-        ),
-        (
-            "3. Object Storage",
-            "MinIO / Amazon S3",
-            "Durable and immutable object store maintaining raw audit and service log archives indexed by ingestion batch IDs.",
-        ),
-        (
-            "4. Message Queue",
-            "RabbitMQ / Amazon SQS",
-            "Asynchronous buffer decoupling ingestion traffic from workers, absorbing traffic spikes, and isolating failures with a Dead Letter Queue (DLQ).",
-        ),
-        (
-            "5. Worker Pool",
-            "Python Consumers / AWS Lambda",
-            "Horizontally scalable workers dequeuing tasks, streaming JSONL records line-by-line, parsing severity, and aggregating telemetry.",
-        ),
-        (
-            "6. Metadata DB",
-            "MongoDB / Amazon DynamoDB",
-            "Document store preserving batch lifecycle states, computed severity counters, and service-level health aggregates.",
-        ),
+        ("1 · Ingest", "FastAPI", "Validates format and compression, archives the raw file to object storage and returns a UUID immediately."),
+        ("2 · Buffer", "RabbitMQ / SQS", "Absorbs traffic spikes and decouples producers from parsing workers, with manual ACKs for at-least-once delivery."),
+        ("3 · Process", "Python workers", "Parse line-level records, classify severity, and compute per-service aggregates and top error signatures."),
+        ("4 · Store", "S3 + Document DB", "Pre-aggregated counters power sub-second dashboards while raw lines stay immutably archived."),
+        ("5 · Visualize", "Streamlit + Plotly", "Auto-refreshing console for telemetry overview, timelines and per-batch diagnostics."),
     ]
-
-    for title, tech, caption in stages:
-        st.markdown(
-            f"""
-            <div class="arch-card">
-                <div class="arch-stage-header">
-                    <span class="arch-stage-title">{title}</span>
-                    <span class="arch-stage-tech">{tech}</span>
-                </div>
-                <div class="arch-stage-desc">{caption}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    _html(
+        "".join(
+            f'<div class="arch-card"><div class="arch-stage-header">'
+            f'<span class="arch-stage-title">{title}</span><span class="arch-stage-tech">{tech}</span></div>'
+            f'<div class="arch-stage-desc">{desc}</div></div>'
+            for title, tech, desc in stages
         )
-
+    )
