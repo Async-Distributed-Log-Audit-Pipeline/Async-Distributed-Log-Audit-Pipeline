@@ -27,3 +27,7 @@ dist-ssr
 *.sw?
 
 SMS-backend/**/logs/
+
+.venv/
+__pycache__/
+*.pyc

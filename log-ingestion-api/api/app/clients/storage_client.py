@@ -4,6 +4,7 @@ Handles file uploads, rollbacks, and automatic bucket verification using boto3.
 """
 
 import logging
+import os
 from typing import BinaryIO, Optional
 import boto3
 from botocore.config import Config
@@ -22,19 +23,19 @@ class StorageUnavailableError(Exception):
 
 class StorageClient:
     """
-    Client for interacting with S3-compatible object storage (MinIO).
+    Client for interacting with S3-compatible object storage (MinIO / AWS S3).
     Uses path-style addressing and ensures target bucket availability.
     """
 
     def __init__(
         self,
-        endpoint_url: str = "http://localhost:9000",
-        access_key: str = "minioadmin",
-        secret_key: str = "minioadmin",
-        bucket_name: str = "raw-logs",
+        endpoint_url: Optional[str] = None,
+        access_key: str = "AKIA4IYK34OZBCRMTZST",
+        secret_key: str = "5xNmSH3YmHrj1LNaRuHDAA4y9KMv9RxLkGLNECR",
+        bucket_name: str = "async-log-audit-bucket-nikeshala",
         region: str = "us-east-1",
     ):
-        self.endpoint_url = endpoint_url
+        self.endpoint_url = endpoint_url or os.getenv("S3_ENDPOINT_URL")
         self.access_key = access_key
         self.secret_key = secret_key
         self.bucket_name = bucket_name
@@ -42,14 +43,17 @@ class StorageClient:
 
         s3_config = Config(s3={"addressing_style": "path"})
         try:
-            self.s3_client = boto3.client(
-                "s3",
-                endpoint_url=self.endpoint_url,
-                aws_access_key_id=self.access_key,
-                aws_secret_access_key=self.secret_key,
-                region_name=self.region,
-                config=s3_config,
-            )
+            client_kwargs = {
+                "service_name": "s3",
+                "aws_access_key_id": self.access_key,
+                "aws_secret_access_key": self.secret_key,
+                "region_name": self.region,
+                "config": s3_config,
+            }
+            if self.endpoint_url:
+                client_kwargs["endpoint_url"] = self.endpoint_url
+
+            self.s3_client = boto3.client(**client_kwargs)
         except Exception as e:
             logger.error("Failed to initialize S3 client: %s", e)
             raise StorageUnavailableError(f"Storage client initialization error: {e}") from e
@@ -96,6 +100,7 @@ class StorageClient:
         Ensures bucket exists before uploading.
         """
         self.ensure_bucket_exists()
+
         try:
             self.s3_client.upload_fileobj(fileobj, self.bucket_name, object_key)
         except ClientError as e:

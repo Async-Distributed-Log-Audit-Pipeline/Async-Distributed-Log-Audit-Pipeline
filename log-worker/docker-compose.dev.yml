@@ -23,20 +23,6 @@ services:
       - mongodb_data:/data/db
     restart: unless-stopped
 
-  object-storage:
-    image: pgsty/minio:latest
-    container_name: log-worker-object-storage
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    volumes:
-      - minio_data:/data
-    restart: unless-stopped
-
   log-worker:
     build:
       context: .
@@ -47,14 +33,12 @@ services:
     environment:
       RABBITMQ_HOST: rabbitmq
       MONGO_URI: mongodb://mongodb:27017
-      S3_ENDPOINT_URL: http://object-storage:9000
+      # S3_ENDPOINT_URL මෙතැනින් සම්පූර්ණයෙන්ම ඉවත් කර ඇත (කෙලින්ම AWS S3 වෙත යයි)
     depends_on:
       - rabbitmq
       - mongodb
-      - object-storage
     restart: unless-stopped
 
 volumes:
   rabbitmq_data:
   mongodb_data:
-  minio_data:

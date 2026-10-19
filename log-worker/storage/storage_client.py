@@ -29,7 +29,7 @@ class ObjectStorageClient:
         bucket_name: str | None = None,
         region: str | None = None,
     ):
-        self.endpoint_url = endpoint_url or os.getenv("S3_ENDPOINT_URL", "http://localhost:9000")
+        self.endpoint_url = endpoint_url or os.getenv("S3_ENDPOINT_URL")
         self.access_key = access_key or os.getenv("S3_ACCESS_KEY", "minioadmin")
         self.secret_key = secret_key or os.getenv("S3_SECRET_KEY", "minioadmin")
         self.bucket_name = bucket_name or os.getenv("S3_BUCKET_NAME", "raw-logs")
