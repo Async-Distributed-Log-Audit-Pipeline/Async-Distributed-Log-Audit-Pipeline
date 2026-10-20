@@ -24,8 +24,8 @@ S3 is your existing bucket **`async-log-audit-bucket-nikeshala`** (region **us-e
 3. Run:
    ```bash
    unzip -o Async-Distributed-Log-Audit-Pipeline*.zip -d app && cd app/Async-Distributed-Log-Audit-Pipeline
-   ls            # you should see template.yaml  build.sh  DEPLOY_AWS.md ...
-   sam --version || pip3 install --user aws-sam-cli     # SAM is normally pre-installed in CloudShell
+   ls            
+   sam --version || pip3 install --user aws-sam-cli     
    ```
 
 ## Step 3 — Build the Lambda packages (1 min)
@@ -51,7 +51,7 @@ aws cloudformation describe-stacks --stack-name log-audit-pipeline --region us-e
 ```
 Copy **`ApiUrl`** (looks like `https://abc123.execute-api.us-east-1.amazonaws.com`).
 
-*If the deploy fails:* open **CloudFormation → Stacks → log-audit-pipeline → Events** and read the first red line. If the stack is in `ROLLBACK_COMPLETE`, run `sam delete --stack-name log-audit-pipeline --region us-east-1` and deploy again.
+
 
 ## Step 5 — Smoke-test the cloud system (2 min)
 ```bash
@@ -110,25 +110,20 @@ Edit code → in CloudShell (re-upload the zip, or `git pull`) → `./build.sh` 
 
 ## Step 9 — Git hygiene
 ```bash
-git tag local-prototype            # in your old repo, before merging
+git tag local-prototype           
 git checkout -b aws-cloud
 # copy this project's files over the repo, then:
-git add -A && git status           # check: no .env, no keys, no build/ folder
+git add -A && git status           
 git commit -m "Migrate pipeline to AWS (S3, SQS, DynamoDB, Lambda, API Gateway)"
 git push -u origin aws-cloud
 ```
 
 ## Step 10 — Clean up (after grading, to avoid charges)
 ```bash
-sam delete --stack-name log-audit-pipeline --region us-east-1      # removes API, Lambdas, SQS, DynamoDB, logs
-aws s3 rm s3://async-log-audit-bucket-nikeshala --recursive         # optional: empty your bucket
-```
+sam delete --stack-name log-audit-pipeline --region us-east-1      
+aws s3 rm s3://async-log-audit-bucket-nikeshala --recursive         
 Terminate the EC2 instance and delete any unused security groups/key pairs.
 
 ---
 
-### Known limitations (mention in the report)
-* The API is public (no authentication). For production add an API Gateway JWT/Lambda authorizer or API key.
-* Upload cap is 4 MB because API Gateway + Lambda limit a request to ~6 MB (base64 adds 33%). Larger files would use S3 pre-signed URLs.
-* DynamoDB listing uses a single constant partition on one GSI (fine for this scale; shard the key for very high write rates).
-* Dashboard on EC2 is HTTP only; put it behind CloudFront/ALB + HTTPS for production.
+
