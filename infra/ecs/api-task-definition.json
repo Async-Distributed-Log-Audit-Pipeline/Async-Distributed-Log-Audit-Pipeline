@@ -1,0 +1,67 @@
+{
+  "family": "log-ingestion-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "log-ingestion-api",
+      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/log-ingestion-api:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "hostPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "QUEUE_TYPE",
+          "value": "sqs"
+        },
+        {
+          "name": "SQS_QUEUE_URL",
+          "value": "https://sqs.<REGION>.amazonaws.com/<ACCOUNT_ID>/log-ingestion-queue"
+        },
+        {
+          "name": "DB_TYPE",
+          "value": "dynamodb"
+        },
+        {
+          "name": "DYNAMODB_TABLE_NAME",
+          "value": "ingestions"
+        },
+        {
+          "name": "S3_BUCKET_NAME",
+          "value": "raw-logs"
+        },
+        {
+          "name": "S3_ENDPOINT_URL",
+          "value": ""
+        },
+        {
+          "name": "S3_REGION",
+          "value": "<REGION>"
+        },
+        {
+          "name": "CORS_ORIGINS",
+          "value": "*"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/log-ingestion-api",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

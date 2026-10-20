@@ -26,22 +26,27 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "*"
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024  # 10 MB size limit default
 
-    # RabbitMQ Configuration
+    # Messaging Queue Configuration (Supports "rabbitmq" or "sqs")
+    QUEUE_TYPE: str = "rabbitmq"
     RABBITMQ_HOST: str = "localhost"
     RABBITMQ_PORT: int = 5672
     RABBITMQ_USER: str = "guest"
     RABBITMQ_PASSWORD: str = "guest"
     RABBITMQ_QUEUE_NAME: str = "log-ingestion-queue"
+    SQS_QUEUE_URL: str | None = None
 
-    # MongoDB Configuration
+    # Database Configuration (Supports "mongodb" or "dynamodb")
+    DB_TYPE: str = "mongodb"
     MONGO_URI: str = "mongodb://localhost:27017"
     MONGO_DB_NAME: str = "log_analytics"
     MONGO_COLLECTION: str = "ingestions"
+    DYNAMODB_TABLE_NAME: str = "ingestions"
 
     # S3 / MinIO Object Storage Configuration
-    S3_ENDPOINT_URL: str = "http://localhost:9000"
-    S3_ACCESS_KEY: str = "minioadmin"
-    S3_SECRET_KEY: str = "minioadmin"
+    # When deployed to AWS, leave S3_ENDPOINT_URL empty or None to use native AWS S3.
+    S3_ENDPOINT_URL: str | None = "http://localhost:9000"
+    S3_ACCESS_KEY: str | None = "minioadmin"
+    S3_SECRET_KEY: str | None = "minioadmin"
     S3_BUCKET_NAME: str = "raw-logs"
     S3_REGION: str = "us-east-1"
 

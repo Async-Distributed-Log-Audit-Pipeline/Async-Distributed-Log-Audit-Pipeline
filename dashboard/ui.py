@@ -437,7 +437,7 @@ def render_header(status: str, api_url: str) -> None:
         </div>
     </div>
     """
-    st.markdown(html_code, unsafe_allow_html=True)
+    st.components.v1.html(html_code, height=80)
 
 
 def render_kpi_cards(total_logs: int, errors: int, warnings: int, critical: int) -> None:
@@ -805,7 +805,7 @@ def render_ingestion_table(rows: list[dict]) -> None:
         </table>
     </div>
     """
-    st.markdown(html_table, unsafe_allow_html=True)
+    st.components.v1.html(html_table, height=400, scrolling=True)
 
 
 def render_top_errors_table(summary: list[dict]) -> None:

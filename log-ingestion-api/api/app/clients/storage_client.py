@@ -28,28 +28,34 @@ class StorageClient:
 
     def __init__(
         self,
-        endpoint_url: str = "http://localhost:9000",
-        access_key: str = "minioadmin",
-        secret_key: str = "minioadmin",
+        endpoint_url: Optional[str] = "http://localhost:9000",
+        access_key: Optional[str] = "minioadmin",
+        secret_key: Optional[str] = "minioadmin",
         bucket_name: str = "raw-logs",
         region: str = "us-east-1",
     ):
-        self.endpoint_url = endpoint_url
-        self.access_key = access_key
-        self.secret_key = secret_key
+        self.endpoint_url = endpoint_url if endpoint_url and endpoint_url.strip() else None
+        self.access_key = access_key if access_key and access_key.strip() else None
+        self.secret_key = secret_key if secret_key and secret_key.strip() else None
         self.bucket_name = bucket_name
         self.region = region
 
-        s3_config = Config(s3={"addressing_style": "path"})
+        # Only enforce path-style addressing if custom endpoint (MinIO) is configured
+        s3_config = Config(s3={"addressing_style": "path"}) if self.endpoint_url else Config()
+
+        client_kwargs = {
+            "service_name": "s3",
+            "region_name": self.region,
+            "config": s3_config,
+        }
+        if self.endpoint_url:
+            client_kwargs["endpoint_url"] = self.endpoint_url
+        if self.access_key and self.secret_key:
+            client_kwargs["aws_access_key_id"] = self.access_key
+            client_kwargs["aws_secret_access_key"] = self.secret_key
+
         try:
-            self.s3_client = boto3.client(
-                "s3",
-                endpoint_url=self.endpoint_url,
-                aws_access_key_id=self.access_key,
-                aws_secret_access_key=self.secret_key,
-                region_name=self.region,
-                config=s3_config,
-            )
+            self.s3_client = boto3.client(**client_kwargs)
         except Exception as e:
             logger.error("Failed to initialize S3 client: %s", e)
             raise StorageUnavailableError(f"Storage client initialization error: {e}") from e
