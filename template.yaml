@@ -1,0 +1,191 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Async Distributed Log & Audit Analytics Pipeline (CS32102).
+  API Gateway + Lambda (API) -> S3 + DynamoDB + SQS -> Lambda (worker) -> DynamoDB.
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: async-log-audit-bucket-nikeshala
+    Description: Name of the EXISTING S3 bucket that stores raw log files.
+  MaxUploadBytes:
+    Type: Number
+    Default: 4194304
+    Description: Upload size cap (API Gateway/Lambda limit a request to about 6 MB incl. base64 overhead).
+  CorsOrigins:
+    Type: String
+    Default: "*"
+    Description: Comma-separated allowed CORS origins ("*" = any).
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    Tracing: PassThrough
+    Environment:
+      Variables:
+        DDB_TABLE_NAME: !Ref IngestionTable
+        S3_BUCKET_NAME: !Ref BucketName
+
+Resources:
+  # ───────────── Message queue + dead-letter queue (replaces RabbitMQ) ─────────────
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: log-ingestion-dlq
+      MessageRetentionPeriod: 1209600   # 14 days
+      SqsManagedSseEnabled: true
+
+  IngestionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: log-ingestion-queue
+      VisibilityTimeout: 360            # >= 6 x worker timeout (AWS recommendation)
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 5              # safety net for crashes/timeouts
+
+  # ───────────── Metadata store (replaces MongoDB) ─────────────
+  IngestionTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: log-ingestions
+      BillingMode: PROVISIONED          # 5 RCU/WCU per table/index: 15+15 total, inside the 25+25 always-free tier
+      ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
+      AttributeDefinitions:
+        - { AttributeName: ingest_id,  AttributeType: S }
+        - { AttributeName: entity,     AttributeType: S }
+        - { AttributeName: status,     AttributeType: S }
+        - { AttributeName: created_at, AttributeType: S }
+      KeySchema:
+        - { AttributeName: ingest_id, KeyType: HASH }
+      GlobalSecondaryIndexes:
+        - IndexName: entity-created_at-index
+          KeySchema:
+            - { AttributeName: entity,     KeyType: HASH }
+            - { AttributeName: created_at, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
+        - IndexName: status-created_at-index
+          KeySchema:
+            - { AttributeName: status,     KeyType: HASH }
+            - { AttributeName: created_at, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
+      SSESpecification: { SSEEnabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false }
+
+  # ───────────── REST API (FastAPI on Lambda behind API Gateway HTTP API) ─────────────
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: log-ingestion-api
+      CodeUri: build/api/
+      Handler: lambda_function.handler
+      MemorySize: 512
+      Timeout: 29                       # API Gateway hard limit is 30 s
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref IngestionQueue
+          MAX_UPLOAD_BYTES: !Ref MaxUploadBytes
+          CORS_ORIGINS: !Ref CorsOrigins
+      Policies:
+        - S3CrudPolicy: { BucketName: !Ref BucketName }
+        - DynamoDBCrudPolicy: { TableName: !Ref IngestionTable }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt IngestionQueue.QueueName }
+      Events:
+        AnyRoute:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+
+  # ───────────── Serverless worker (triggered by SQS) ─────────────
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: log-worker
+      CodeUri: build/worker/
+      Handler: lambda_function.handler
+      MemorySize: 256
+      Timeout: 60
+      Environment:
+        Variables:
+          QUEUE_URL: !Ref IngestionQueue
+          DLQ_URL: !Ref DeadLetterQueue
+          MAX_RETRIES: "3"
+          RETRY_BASE_DELAY_SECONDS: "2"
+          RETRY_MAX_DELAY_SECONDS: "60"
+          MAX_SKIPPED_RATIO: "0.5"
+      Policies:
+        - S3ReadPolicy: { BucketName: !Ref BucketName }
+        - DynamoDBCrudPolicy: { TableName: !Ref IngestionTable }
+        - SQSPollerPolicy: { QueueName: !GetAtt IngestionQueue.QueueName }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt DeadLetterQueue.QueueName }
+      Events:
+        QueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt IngestionQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 5 }
+
+  # ───────────── Logging / monitoring ─────────────
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ApiFunction}
+      RetentionInDays: 14
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${WorkerFunction}
+      RetentionInDays: 14
+
+  DlqNotEmptyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: log-ingestion-dlq-not-empty
+      AlarmDescription: At least one message ended up in the dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - { Name: QueueName, Value: !GetAtt DeadLetterQueue.QueueName }
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  PipelineDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: log-audit-pipeline
+      DashboardBody: !Sub |
+        {"widgets":[
+          {"type":"metric","x":0,"y":0,"width":12,"height":6,"properties":{"title":"Queue depth","region":"${AWS::Region}","stat":"Maximum","period":60,
+            "metrics":[["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${IngestionQueue.QueueName}"],["...","${DeadLetterQueue.QueueName}"]]}},
+          {"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{"title":"Worker invocations / errors","region":"${AWS::Region}","stat":"Sum","period":60,
+            "metrics":[["AWS/Lambda","Invocations","FunctionName","${WorkerFunction}"],[".","Errors",".","."]]}},
+          {"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{"title":"Worker duration (ms)","region":"${AWS::Region}","stat":"Average","period":60,
+            "metrics":[["AWS/Lambda","Duration","FunctionName","${WorkerFunction}"]]}},
+          {"type":"metric","x":12,"y":6,"width":12,"height":6,"properties":{"title":"API requests / errors","region":"${AWS::Region}","stat":"Sum","period":60,
+            "metrics":[["AWS/Lambda","Invocations","FunctionName","${ApiFunction}"],[".","Errors",".","."]]}}
+        ]}
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the REST API (use as API_BASE_URL for the dashboard)
+    Value: !Sub https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com
+  SwaggerUi:
+    Value: !Sub https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/docs
+  QueueUrl:
+    Value: !Ref IngestionQueue
+  DeadLetterQueueUrl:
+    Value: !Ref DeadLetterQueue
+  TableName:
+    Value: !Ref IngestionTable
