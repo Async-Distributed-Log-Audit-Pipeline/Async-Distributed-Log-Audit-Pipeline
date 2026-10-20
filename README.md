@@ -1,127 +1,418 @@
-# 🚀 Asynchronous Distributed Log & Audit Analytics Pipeline
+<<<<<<< HEAD
+# Log Ingestion API Service
 
-An event-driven, decoupled distributed system that ingests raw application/audit logs from microservices, parses them **asynchronously**, computes severity metrics and shows live analytics on a dashboard.
+**Component:** Front-Door Log Ingestion API  
+**Project:** Asynchronous Distributed Log & Audit Analytics Pipeline (CS32102)  
+**Branch:** `api-developer`  
+**Runtime:** Python 3.13.x  
 
-Built for the **CS32102 Distributed Systems Mini-Project** — General Sir John Kotelawala Defence University.
+---
 
-The same architecture is delivered in **two deployments**:
+## 1. Purpose & Architecture Overview
 
-| | 🐳 Docker (local prototype) | ☁️ AWS (cloud deployment) |
+The **Log Ingestion API** serves as the public "front door" of the distributed audit analytics pipeline. It is responsible for:
+1. **Validating & Ingesting Logs**: Accepting multipart uploads of raw JSON / JSONL log files (including gzip-compressed variants), validating filenames, sanitizing service identifiers, enforcing upload size quotas while streaming, and running lightweight syntax checks.
+2. **Object Storage Persistence**: Storing raw log files securely in S3 / MinIO object storage (`raw-logs` bucket).
+3. **Pipeline Task Registration**: Registering a persistent `pending` tracking record in MongoDB (`log_analytics.ingestions`).
+4. **Asynchronous Job Dispatching**: Enqueuing persistent processing messages to RabbitMQ (`log-ingestion-queue`) with publisher confirmations.
+5. **Client Query Interface**: Providing low-latency, read-only query endpoints for liveness (`/health`), individual job status (`/logs/status`), historical logs list with pagination and filtering (`/logs`), and operational health metrics aggregations (`/metrics/summary`).
+
+> **Boundary Note:** This service does **NOT** parse entire log files, calculate error distributions, generate analytics reports, or consume RabbitMQ messages. Those responsibilities belong exclusively to the asynchronous **Log Worker** service.
+
+---
+
+## 2. Windows Local Setup (Python 3.13)
+
+### Prerequisites
+- Python 3.13 installed on Windows (`python --version`)
+- Docker Desktop running (for local MongoDB, MinIO, and RabbitMQ containers)
+
+### Step-by-Step Installation
+
+```powershell
+# 1. Navigate to the api directory
+cd "c:\Users\L sewmini yasasma\Desktop\Semester 6\Async-Distributed-Log-Audit-Pipeline\log-ingestion-api\api"
+
+# 2. Create a clean Python 3.13 virtual environment
+python -m venv venv
+
+# 3. Activate the virtual environment
+.\venv\Scripts\Activate.ps1
+
+# 4. Install all runtime and development dependencies
+pip install -r requirements.txt
+
+# 5. Create local environment configuration from template
+Copy-Item .env.example .env
+```
+
+---
+
+## 3. Environment Variables
+
+All environment variables follow the exact naming conventions established across the pipeline repository:
+
+| Variable | Default Value | Description |
 | :--- | :--- | :--- |
-| Where | repository root | [`aws/`](aws/) folder |
-| API | FastAPI container | FastAPI on **Lambda** + **API Gateway** |
-| Object storage | MinIO | **Amazon S3** |
-| Message queue | RabbitMQ (+ dead-letter queue) | **Amazon SQS** (+ dead-letter queue) |
-| Worker | Python consumer container | **Lambda** triggered by SQS |
-| Metadata DB | MongoDB | **DynamoDB** |
-| Dashboard | Streamlit container | Streamlit Cloud / EC2 / Local |
-| Run with | `docker compose up --build -d` | `sam deploy` — see [`aws/DEPLOY_AWS.md`](aws/DEPLOY_AWS.md) |
+| `PORT` | `8000` | Port for the Uvicorn HTTP server |
+| `HOST` | `0.0.0.0` | Host bind address |
+| `CORS_ORIGINS` | `*` | Comma-separated list of allowed CORS origins or `*` |
+| `MAX_UPLOAD_BYTES` | `10485760` | Maximum upload size in bytes (default 10 MB) |
+| `RABBITMQ_HOST` | `localhost` | RabbitMQ broker hostname |
+| `RABBITMQ_PORT` | `5672` | RabbitMQ AMQP port |
+| `RABBITMQ_USER` | `guest` | RabbitMQ username |
+| `RABBITMQ_PASSWORD` | `guest` | RabbitMQ password |
+| `RABBITMQ_QUEUE_NAME` | `log-ingestion-queue` | Target durable queue name for worker processing |
+| `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection URI |
+| `MONGO_DB_NAME` | `log_analytics` | MongoDB database name |
+| `MONGO_COLLECTION` | `ingestions` | MongoDB collection name for ingestion documents |
+| `S3_ENDPOINT_URL` | `http://localhost:9000` | S3 / MinIO endpoint URL |
+| `S3_ACCESS_KEY` | `minioadmin` | MinIO root/access user |
+| `S3_SECRET_KEY` | `minioadmin` | MinIO secret password |
+| `S3_BUCKET_NAME` | `raw-logs` | Target S3 bucket for uploaded log files |
+| `S3_REGION` | `us-east-1` | AWS S3 / MinIO region identifier |
 
 ---
 
-## 📊 Live Dashboards
+## 4. Running Locally Against Infrastructure
 
-*   **Cloud Deployment (Streamlit Community Cloud):** [https://async-distributed-log-audit-pipeline-6nuqu4le73zbavvntefnwp.streamlit.app/](https://async-distributed-log-audit-pipeline-6nuqu4le73zbavvntefnwp.streamlit.app/)
-*   **Local Deployment:** `http://localhost:8501` (when running via Docker Compose)
+### 4.1. Start MongoDB and MinIO
+Use the worker's existing development Compose file:
+```powershell
+docker compose -f "..\..\log-worker\docker-compose.dev.yml" up -d
+```
 
----
+### 4.2. Start RabbitMQ
+Run a RabbitMQ container with the management plugin:
+```powershell
+docker run -d --name pipeline-rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
+```
 
-## 👥 Team Roles & Responsibilities
-
-| Role | Team Member | Primary Responsibilities |
-| :--- | :--- | :--- |
-| **Project Lead / Integrator** | THN Dewindi | Team coordination, repo setup, system integration, AWS cost management |
-| **API Developer** | LSY Liyanage | REST API design (FastAPI), endpoint logic, request validation |
-| **Backend Dev & DBA** | BASA Wijesekara | Metadata DB schema (MongoDB / DynamoDB), aggregation queries |
-| **Worker / Processing Dev** | AHS Kavinda | Queue consumer, JSONL parsing, idempotency, DLQ handling |
-| **Frontend / DevOps** | KLI Sathsarani | Streamlit dashboard, Docker Compose, AWS deployment & monitoring |
-
----
-
-## 🏗 Architecture
-
-1. **Ingestion (synchronous):** client uploads a log file → API validates it → stores the raw file in **object storage** → inserts a `pending` record in the **metadata DB** → publishes a job to the **queue** → returns `201 Created` immediately.
-2. **Processing (asynchronous):** a **worker** takes the job, downloads the file, parses severity levels (INFO / WARN / ERROR / CRITICAL), computes metrics and a report, and sets the record to `completed` or `failed`.
-3. **Analytics:** the **dashboard** reads status, history and per-service health from the API.
-Dashboard (Streamlit)
-│  HTTP
-▼
-Ingestion API (FastAPI) ──1) raw file──► Object storage   (MinIO  |  S3)
-│  ──2) pending record──────────► Metadata DB      (MongoDB | DynamoDB)
-│  ──3) job message──► Queue (RabbitMQ | SQS) ──► Worker (container | Lambda)
-▼                            │                │ download file,
-201 {ingest_id, status: pending}            ▼                │ parse, compute metrics
-Dead-letter queue        ▼
-update status/metrics in Metadata DB
-### Reliability features (both deployments)
-- **Decoupling** — the API never waits for parsing; each component deploys and scales independently.
-- **Idempotency** — status changes are conditional (`pending|processing → completed|failed`), so duplicate deliveries are skipped and a finished record never regresses.
-- **Retries with exponential backoff + jitter** for transient failures (storage/DB outage), up to `MAX_RETRIES=3`, then **dead-letter queue** and the record is marked `failed`.
-- **Permanent errors** (corrupt / unparseable file) → `failed` immediately with a reason, no retries.
-- **Rollback on partial failure** — S3/MinIO object is deleted if the DB write fails; the record is marked `failed` if queuing fails.
-- **Validation** — file extension, size cap (streamed), service-name sanitising, gzip/JSON sanity check.
+### 4.3. Run the API Service
+```powershell
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+- Interactive Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
+- Alternative ReDoc UI: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+- Raw OpenAPI JSON: [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
 
 ---
 
-## 📌 API Endpoints
+## 5. Endpoints & API Specification
 
-| Method & path | Description |
-| :--- | :--- |
-| `POST /logs/upload` | multipart: `file` (`.json`, `.jsonl`, `.json.gz`, `.jsonl.gz`), `service_name`, `environment` → `201 {ingest_id, status:"pending"}` |
-| `GET /logs/status?id={ingest_id}` | status, metrics, top error and report of one batch (`404` if unknown) |
-| `GET /logs` | history, newest first; filters `service_name`, `status`, `environment`; paging `limit` (≤ 200), `skip` |
-| `GET /metrics/summary` | per-service totals and health; filters `service_name`, `from`, `to` |
-| `GET /health` | liveness probe |
-| `GET /docs` | interactive Swagger UI |
+### 5.1. `GET /health`
+Liveness probe endpoint. Returns service status without querying external dependencies.
 
-Health rule: `critical` if any CRITICAL logs → else `degraded` if any ERROR → else `warning` if any WARN → else `healthy`.
-Upload limits: **10 MB** on Docker, **4 MB** on AWS (API Gateway + Lambda request limit).
+- **Request:**
+  ```http
+  GET /health HTTP/1.1
+  Host: localhost:8000
+  ```
+- **Response (200 OK):**
+  ```json
+  {
+    "status": "ok"
+  }
+  ```
 
-Example:
-```bash
-curl -F "file=@sample.jsonl" -F "service_name=auth-service" -F "environment=dev" http://localhost:8000/logs/upload
-curl "http://localhost:8000/logs/status?id=<ingest_id>"
-curl http://localhost:8000/metrics/summary
-Expected log line format (one JSON object per line):JSON{"@timestamp":"2026-10-20T09:00:09Z","level":"ERROR","message":"Connection refused to database host","logger_name":"demo.db"}
-🐳 Option 1 — Run locally with DockerPrerequisite: Docker Desktop with Docker Compose.Bashgit clone [https://github.com/](https://github.com/)<your-user>/Async-Distributed-Log-Audit-Pipeline.git
-cd Async-Distributed-Log-Audit-Pipeline
-docker compose up --build -d       # starts RabbitMQ, MongoDB, MinIO, API, worker, dashboard
-docker compose ps                  # all services should be "running" / "healthy"
-ServiceURLDashboardhttp://localhost:8501API Swagger UIhttp://localhost:8000/docsRabbitMQ consolehttp://localhost:15672 (guest / guest)MinIO consolehttp://localhost:9001 (minioadmin / minioadmin)Useful commands:Bashdocker compose logs -f log-worker                      # watch the worker process jobs
-docker compose up -d --scale log-worker=2              # run two worker replicas
-docker compose run --rm db-init python seed_services.py # optional demo data
-docker compose down                                    # stop (add -v to delete stored data)
-The first start builds all images and applies the MongoDB schema/indexes and creates the raw-logs bucket automatically (db-init). Settings are in docker-compose.yml; copy .env.example to .env only when running a component outside Docker.☁️ Option 2 — Deploy to AWSEverything lives in aws/ and is created by one SAM/CloudFormation stack: API Gateway, 2 Lambda functions, SQS + DLQ, DynamoDB, IAM roles, CloudWatch logs/dashboard/alarm. S3 uses your existing bucket.Bashcd aws
-./build.sh                          # packages the two Lambda functions (no Docker needed)
-sam deploy --stack-name log-audit-pipeline --region us-east-1 --capabilities CAPABILITY_IAM \
-  --resolve-s3 --no-confirm-changeset --parameter-overrides BucketName=<your-bucket>
-./scripts/smoke_test.sh <ApiUrl>    # upload → worker → completed → metrics
-Full step-by-step (CloudShell, dashboard on EC2, failure demos, clean-up): aws/DEPLOY_AWS.md.AWS-specific architecture, monitoring and free-tier cost report: aws/README.md.Security: the Lambdas use IAM roles — never commit access keys. If a key was ever shared in chat or committed, delete it in IAM and create a new one.🧪 TestingBash# Docker version
-(cd log-ingestion-api/api && pip install -r requirements.txt && python -m pytest)   # API unit tests (in-memory fakes)
-(cd log-worker && pip install -r requirements-dev.txt && python -m pytest)          # worker unit tests
-(cd db && pip install -r requirements.txt && python -m pytest)                      # aggregation tests
+---
 
-# AWS version (no AWS account needed: S3/SQS/DynamoDB are emulated)
-cd aws
-pip install -r log-ingestion-api/api/requirements-dev.txt -r log-worker/requirements-dev.txt
-(cd log-ingestion-api/api && python -m pytest)
-(cd log-worker && python -m pytest)
-python scripts/e2e_moto_test.py       # full pipeline: upload, worker, duplicates, retries, DLQ, metrics
-📂 Repository Structure.
-├── docker-compose.yml          # Docker deployment: whole stack
-├── log-ingestion-api/api/      # FastAPI ingestion API (RabbitMQ / MongoDB / MinIO)
-├── log-worker/                 # Queue consumer, parser, analytics, retry policy
-├── db/                         # MongoDB schema, indexes, aggregations, seed scripts
-├── dashboard/                  # Streamlit dashboard
-├── infra/                      # Dashboard-only compose (demo mode)
-├── docs/                       # Data-layer documentation
-├── log sources/                # Sample microservices that produce test logs
-└── aws/                        # AWS deployment (self-contained)
-    ├── template.yaml           #   SAM / CloudFormation stack
-    ├── build.sh                #   builds the Lambda packages
-    ├── DEPLOY_AWS.md           #   step-by-step guide
-    ├── log-ingestion-api/api/  #   API on Lambda (S3 / SQS / DynamoDB)
-    ├── log-worker/             #   worker Lambda (SQS-triggered)
-    ├── dashboard/              #   dashboard (AWS-tuned timeouts / limits)
-    └── scripts/                #   e2e (moto) test and deployed smoke test
-💰 AWS Cost Report (free-tier usage)ServiceConfigurationExpected usageFree allowanceLambda (2 functions)512 MB / 256 MB, Python 3.12< 5 000 invocations/month1 M requests + 400 000 GB-sAPI Gateway (HTTP API)1 API< 5 000 calls/month1 M calls/month (12 months)SQS (queue + DLQ)standard, encrypted< 20 000 requests/month1 M requests/monthDynamoDBprovisioned 5 RCU/5 WCU on table + 2 indexes (15/15 total)< 1 MB data25 RCU/25 WCU, 25 GBS31 bucket, SSE-S3< 100 MB5 GB (12 months)CloudWatch2 log groups (14 days), 1 dashboard, 1 alarm–5 GB logs, 3 dashboards, 10 alarmsEC2 (dashboard only)1 × t3.micro, stopped when idle≤ 750 h750 h/month (12 months / free-plan credits)Estimated monthly cost ≈ $0. Set a billing budget alert and delete the stack (sam delete) after grading.⚠️ Known LimitationsThe API has no authentication (add an API Gateway authorizer / API key for production).AWS uploads are limited to ~4 MB; larger files would use S3 pre-signed URLs.The dashboard on EC2 is served over HTTP; use CloudFront/ALB for HTTPS.Dashboard and parser code is duplicated between the root and aws/ folders so each deployment stays self-contained.
+### 5.2. `POST /logs/upload`
+Accepts a multipart log upload, validates syntax and size, uploads the raw file to MinIO, records a `pending` job in MongoDB, and enqueues a message to RabbitMQ.
+
+- **Request:**
+  - Content-Type: `multipart/form-data`
+  - Parameters:
+    - `file`: Raw log file (`.json`, `.jsonl`, `.json.gz`, `.jsonl.gz`)
+    - `service_name`: Alphanumeric service identifier with `-` and `_`
+    - `environment`: Optional deployment environment (default: `"dev"`)
+
+  ```bash
+  curl -X POST "http://localhost:8000/logs/upload" \
+    -F "file=@sample.jsonl" \
+    -F "service_name=auth-service" \
+    -F "environment=dev"
+  ```
+
+- **Response (201 Created):**
+  ```json
+  {
+    "ingest_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+    "status": "pending"
+  }
+  ```
+
+- **Error Codes:**
+  - `400 Bad Request`: Disallowed extension, empty file, invalid JSON records, corrupt gzip, or unsafe `service_name` containing `/`, `\`, `..`.
+  - `413 Content Too Large`: Upload exceeds `MAX_UPLOAD_BYTES` (enforced while streaming).
+  - `422 Unprocessable Entity`: Missing required `file` or `service_name`.
+  - `503 Service Unavailable`: Downstream storage, database, or RabbitMQ unavailable.
+
+---
+
+### 5.3. `GET /logs/status?id=<ingest_id>`
+Retrieves the complete ingestion job record from MongoDB by its unique `ingest_id`. The internal MongoDB `_id` is stripped from every response.
+
+- **Request:**
+  ```http
+  GET /logs/status?id=9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d HTTP/1.1
+  Host: localhost:8000
+  ```
+- **Response (200 OK - Pending Job):**
+  ```json
+  {
+    "ingest_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+    "service_name": "auth-service",
+    "environment": "dev",
+    "object_key": "raw-logs/auth-service-9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d.jsonl",
+    "status": "pending",
+    "metrics": null,
+    "top_error": null,
+    "report": null,
+    "error_reason": null,
+    "created_at": "2026-09-28T16:50:00Z",
+    "processed_at": null,
+    "processing_started_at": null
+  }
+  ```
+- **Response (200 OK - Worker Completed Job):**
+  ```json
+  {
+    "ingest_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+    "service_name": "auth-service",
+    "environment": "dev",
+    "object_key": "raw-logs/auth-service-9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d.jsonl",
+    "status": "completed",
+    "metrics": {
+      "total_logs": 1500,
+      "critical_count": 0,
+      "error_count": 12,
+      "warning_count": 45,
+      "info_count": 1400,
+      "debug_count": 43,
+      "other_count": 0
+    },
+    "top_error": "Connection reset by peer: redis:6379",
+    "report": {
+      "health": "degraded",
+      "time_range": {
+        "first": "2026-09-28T12:00:00Z",
+        "last": "2026-09-28T12:30:00Z"
+      },
+      "top_errors": [
+        {"message": "Connection reset by peer: redis:6379", "count": 8}
+      ],
+      "top_warnings": [],
+      "top_sources": [
+        {"logger": "com.auth.security", "count": 12}
+      ],
+      "findings": [],
+      "skipped_lines": 0
+    },
+    "error_reason": null,
+    "created_at": "2026-09-28T16:50:00Z",
+    "processed_at": "2026-09-28T16:50:03Z",
+    "processing_started_at": "2026-09-28T16:50:01Z"
+  }
+  ```
+- **Error Codes:**
+  - `404 Not Found`: Ingestion record with given `ingest_id` does not exist.
+  - `503 Service Unavailable`: MongoDB unreachable.
+
+---
+
+### 5.4. `GET /logs`
+Lists historical log ingestion records sorted newest first (`created_at` descending). Supports filtering and pagination.
+
+- **Query Parameters:**
+  - `service_name`: (Optional) Filter by service name.
+  - `status`: (Optional) Filter by status (`pending`, `processing`, `completed`, `failed`).
+  - `environment`: (Optional) Filter by environment (`dev`, `staging`, `prod`).
+  - `limit`: (Optional, default: 50, max: 200) Number of records to return.
+  - `skip`: (Optional, default: 0) Number of records to skip.
+
+- **Request:**
+  ```http
+  GET /logs?service_name=auth-service&status=completed&limit=10 HTTP/1.1
+  Host: localhost:8000
+  ```
+- **Response (200 OK):**
+  ```json
+  [
+    {
+      "ingest_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+      "service_name": "auth-service",
+      "environment": "dev",
+      "object_key": "raw-logs/auth-service-9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d.jsonl",
+      "status": "completed",
+      "metrics": { ... },
+      "top_error": "Connection reset by peer",
+      "report": { ... },
+      "error_reason": null,
+      "created_at": "2026-09-28T16:50:00Z",
+      "processed_at": "2026-09-28T16:50:03Z",
+      "processing_started_at": "2026-09-28T16:50:01Z"
+    }
+  ]
+  ```
+
+---
+
+### 5.5. `GET /metrics/summary`
+Calculates operational health and aggregated log counts per service across all `completed` jobs using MongoDB aggregation.
+
+- **Query Parameters:**
+  - `service_name`: (Optional) Filter for a single service.
+  - `from`: (Optional) ISO 8601 start timestamp (`created_at >= from`).
+  - `to`: (Optional) ISO 8601 end timestamp (`created_at <= to`).
+
+- **Request:**
+  ```http
+  GET /metrics/summary HTTP/1.1
+  Host: localhost:8000
+  ```
+- **Response (200 OK):**
+  ```json
+  [
+    {
+      "service_name": "auth-service",
+      "total_logs": 15000,
+      "error_count": 25,
+      "warning_count": 120,
+      "critical_count": 0,
+      "health": "degraded"
+    },
+    {
+      "service_name": "payment-service",
+      "total_logs": 8200,
+      "error_count": 0,
+      "warning_count": 14,
+      "critical_count": 0,
+      "health": "healthy"
+    }
+  ]
+  ```
+
+---
+
+## 6. Upload Flow Order & Transactional Failure Handling
+
+### Execution Sequence
+The upload pipeline enforces a strict sequential order:
+```text
+Client Upload -> Validation -> MinIO Storage -> MongoDB -> RabbitMQ -> 201 Created
+```
+**Why this exact order?**
+- Enqueuing the message to RabbitMQ *only after* both the raw object in MinIO and the tracking document in MongoDB exist guarantees that the downstream Worker will never pick up a job for a file or database record that does not yet exist.
+
+### Failure Handling & Rollbacks
+If any stage fails during the upload pipeline, compensating actions guarantee that no orphaned records or silent hangs occur:
+
+```
+[ Step 1 & 2: Validation & UUID Generation ]
+       │
+       ▼
+[ Step 3: S3 / MinIO Upload ] ──(Fails)──> Return HTTP 503; Nothing created in DB or Queue.
+       │ (Success)
+       ▼
+[ Step 4: MongoDB Insert ] ───(Fails)──> Delete uploaded S3 object (best-effort rollback);
+       │ (Success)                        Return HTTP 503; Nothing queued.
+       ▼
+[ Step 5: RabbitMQ Publish ] ──(Fails)──> Atomically mark MongoDB record status='failed'
+       │ (Success)                        with error_reason (only if still pending);
+       │                                  Return HTTP 503; No job left in 'pending'.
+       ▼
+[ Step 6: Return HTTP 201 Created ]
+```
+
+- **API Modification Invariant:** The Ingestion API never modifies an ingestion document after insertion except for the atomic Step-5 failure fallback. All subsequent status transitions (`processing`, `completed`, `failed`) are owned by the Worker.
+
+---
+
+## 7. Operational Health Rule
+
+Operational health in `/metrics/summary` is computed deterministically from the aggregated error counters:
+
+$$\text{health} = \begin{cases} \mathbf{critical} & \text{if } \text{critical\_count} > 0 \\ \mathbf{degraded} & \text{else if } \text{error\_count} > 0 \\ \mathbf{healthy} & \text{otherwise} \end{cases}$$
+
+---
+
+## 8. Key Engineering & Design Decisions
+
+1. **Synchronous Threadpool Execution (`def` vs `async def`):**
+   `pika`, `pymongo`, and `boto3` are synchronous, blocking libraries. Declaring route handlers as standard `def` routes ensures FastAPI dispatches them into an internal AnyIO worker threadpool, preventing event-loop starvation.
+2. **RabbitMQ Thread Safety & Publisher Confirms:**
+   `pika` connections and channels are **not thread-safe**. Sharing a single channel or connection across concurrent threadpool workers leads to corrupted AMQP frames. The `QueueClient` opens a short-lived connection per publish, declares the queue durable, enables publisher confirmations (`confirm_delivery()`), verifies persistent dispatch, and cleanly closes the connection. This design provides robust thread safety without lock contention.
+3. **Streaming Size Enforcement:**
+   Rather than loading large uploads into memory with `await file.read()`, the API streams chunks through a `SpooledTemporaryFile` (RAM buffer up to 1 MB, then spooled to disk). If cumulative bytes exceed `MAX_UPLOAD_BYTES`, streaming halts immediately with HTTP 413, defending against DoS attacks.
+4. **Lightweight Gzip Verification:**
+   For compressed `.gz` uploads, only the magic bytes (`0x1f 0x8b`) and the initial JSON lines are read via a streaming decompressor. The entire compressed file is never unzipped into RAM during validation.
+5. **Dependency Injection:**
+   All clients, repositories, and services are injected using FastAPI `Depends()`, enabling 100% isolated unit and integration testing via in-memory fakes without live infrastructure.
+
+---
+
+## 9. Open Questions & Repository Alignment
+
+1. **`ingest_id` vs MongoDB `_id`:**
+   - *Resolution:* The pipeline standardized on UUID4 strings stored in the `ingest_id` field across MinIO object keys, RabbitMQ payloads, and query parameters. MongoDB's internal `_id` (ObjectId) is explicitly omitted (`{"_id": 0}`) from all API responses to decouple client contracts from database internals.
+2. **`.jsonl` Accepted in Addition to `.json`:**
+   - *Resolution:* The pipeline accepts both line-delimited JSON (`.jsonl`, `.jsonl.gz`) and standard JSON (`.json`, `.json.gz`).
+3. **`GET /logs` Listing & `report` Model Addition:**
+   - *Resolution:* The SRS initially focused on single-job status lookup. To support frontend dashboards, `GET /logs` (with pagination and filters) and the Worker's comprehensive `report` object were incorporated into the data model. The SRS should be updated to reflect this.
+4. **Metrics Summary Aggregation Ownership:**
+   - *Resolution:* While a future dedicated Backend/Analytics service may assume ownership of aggregate reporting, the Ingestion API currently provides `GET /metrics/summary` to immediately unblock dashboard developers.
+5. **Environment Defaulting:**
+   - *Resolution:* If the optional `environment` field is omitted in `POST /logs/upload`, it defaults to `"dev"`.
+
+---
+
+## 10. Suggested Docker Compose Snippet
+
+To integrate the Ingestion API into the root `docker-compose.yml`, add the following service definition:
+
+```yaml
+  log-ingestion-api:
+    build:
+      context: ./log-ingestion-api/api
+      dockerfile: Dockerfile
+    container_name: log-ingestion-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - CORS_ORIGINS=*
+      - MAX_UPLOAD_BYTES=10485760
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=guest
+      - RABBITMQ_PASSWORD=guest
+      - RABBITMQ_QUEUE_NAME=log-ingestion-queue
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB_NAME=log_analytics
+      - MONGO_COLLECTION=ingestions
+      - S3_ENDPOINT_URL=http://object-storage:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET_NAME=raw-logs
+      - S3_REGION=us-east-1
+    depends_on:
+      - mongodb
+      - object-storage
+      - rabbitmq
+    restart: unless-stopped
+```
+=======
+# Log Ingestion API (AWS Lambda edition)
+
+FastAPI application served on **AWS Lambda** through **API Gateway (HTTP API)** using the Mangum ASGI adapter (`lambda_function.handler`).
+
+Flow of `POST /logs/upload`: validate → **S3** `PutObject` → **DynamoDB** `PutItem` (status `pending`) → **SQS** `SendMessage` → `201`. If a step fails, earlier steps are rolled back (S3 object deleted / record marked `failed`).
+
+Configuration (environment variables, set by `template.yaml`): `SQS_QUEUE_URL`, `DDB_TABLE_NAME`, `S3_BUCKET_NAME`, `AWS_REGION`, `MAX_UPLOAD_BYTES` (default 4 MB), `CORS_ORIGINS`. No credentials are configured — Lambda uses its IAM role.
+
+Run unit tests: `pip install -r requirements-dev.txt && python -m pytest`
+Run locally (needs `aws configure` + deployed resources): `uvicorn app.main:app --reload` with the variables above exported.
+Interactive docs: `<ApiUrl>/docs`.
+>>>>>>> aws-cloud
