@@ -798,23 +798,40 @@ def _health_badge(svc: dict) -> str:
 
 
 def render_batch_detail(record: dict) -> None:
-    """Diagnostic card for a single ingestion batch."""
+    """Comprehensive diagnostic inspector for an ingestion batch with line-by-line error breakdown."""
+    if not record:
+        st.warning("No record details provided.")
+        return
+
     record = record or {}
-    metrics = record.get("metrics") or record
+    metrics = record.get("metrics") or {}
     status = str(record.get("status", "unknown")).lower()
     reason = record.get("error_reason")
+    top_error = record.get("top_error")
+    report = record.get("report") or {}
+
+    health = report.get("health") or ("failed" if status == "failed" else "pending")
+    service_name = record.get("service_name", "unknown")
+    environment = record.get("environment", "prod")
+    object_key = record.get("object_key", "—")
+    created = record.get("created_at") or "—"
+    started = record.get("processing_started_at") or "—"
+    processed = record.get("processed_at") or "—"
 
     stats = [
         ("Total logs", metrics.get("total_logs")),
-        ("Errors", metrics.get("error_count")),
+        ("Info", metrics.get("info_count")),
         ("Warnings", metrics.get("warning_count")),
+        ("Errors", metrics.get("error_count")),
         ("Critical", metrics.get("critical_count")),
     ]
     stats_html = "".join(
         f'<div class="detail-stat"><div class="detail-stat-label">{label}</div><div class="detail-stat-val">{_fmt_num(val)}</div></div>'
         for label, val in stats
     )
-    reason_html = f'<div class="detail-error"><b>Root cause:</b> {_esc(reason)}</div>' if reason else ""
+    reason_html = f'<div class="detail-error"><b>Pipeline Failure Reason:</b> {_esc(reason)}</div>' if reason else ""
+
+    h_badge = f'<span class="badge badge-{health.lower()}">● {health.capitalize()}</span>' if health else ""
 
     _html(
         f"""
@@ -822,18 +839,104 @@ def render_batch_detail(record: dict) -> None:
             <div class="detail-head">
                 <div>
                     <div class="detail-id">{_esc(record.get("ingest_id", "—"))}</div>
-                    <div class="detail-meta">{_esc(record.get("service_name", "unknown"))} · {_esc(record.get("environment", "prod"))}</div>
+                    <div class="detail-meta">{_esc(service_name)} · {_esc(environment)} · Storage: <code>{_esc(object_key)}</code></div>
                 </div>
-                {render_status_badge(status)}
+                <div style="display:flex; gap:0.5rem; align-items:center;">
+                    {h_badge}
+                    {render_status_badge(status)}
+                </div>
             </div>
             <div class="detail-stats">{stats_html}</div>
             {reason_html}
         </div>
         """
     )
-    with st.expander("Raw record"):
-        raw = json.dumps(record, indent=2, default=str)
-        st.markdown(f'<pre class="raw-pre">{html.escape(raw)}</pre>', unsafe_allow_html=True)
+
+    st.caption(f"**Submitted:** `{created}` | **Started:** `{started}` | **Processed:** `{processed}`")
+
+    if top_error:
+        st.warning(f"**Top Frequent Error Signature:** {top_error}")
+
+    # 1. Audit Rule Findings & Diagnostic Reasons
+    findings = report.get("findings") or []
+    if findings:
+        st.markdown("#### 🔍 Audit Rule Findings & Diagnostic Reasons")
+        for f in findings:
+            f_title = f.get("title", f.get("id", "Finding"))
+            f_sev = str(f.get("severity", "warning")).lower()
+            f_count = f.get("count", 1)
+            f_hint = f.get("hint", "")
+            f_example = f.get("example", "")
+
+            sev_badge_class = "badge-critical" if f_sev in ("error", "critical") else "badge-degraded" if f_sev == "warning" else "badge-completed"
+            sev_badge = f'<span class="badge {sev_badge_class}">{f_sev.upper()}</span>'
+
+            st.markdown(
+                f"**{f_title}** &nbsp; ({f_count} occurrence{'s' if f_count != 1 else ''}) &nbsp; {sev_badge}",
+                unsafe_allow_html=True,
+            )
+            if f_hint:
+                st.info(f"💡 **Diagnostic Reason / Hint:** {f_hint}")
+            if f_example:
+                st.code(f_example, language="text")
+            st.divider()
+
+    # 2. Line-by-Line Error Samples & Stack Traces
+    error_samples = report.get("error_samples") or []
+    if error_samples:
+        st.markdown("#### 🚨 Line-by-Line Error Samples & Stack Traces")
+        st.caption("Detailed error statements captured from individual log lines with root-cause traces:")
+        for idx, sample in enumerate(error_samples, start=1):
+            ts = sample.get("timestamp", "—")
+            logger_name = sample.get("logger", "unknown")
+            msg = sample.get("message", "No message provided")
+            stack_trace = sample.get("stack_trace_head") or sample.get("stack_trace")
+
+            with st.expander(f"Line #{idx} · [{logger_name}] {msg[:85]}…", expanded=(idx == 1)):
+                st.markdown(f"**Timestamp:** `{ts}` &nbsp;|&nbsp; **Logger:** `{logger_name}`")
+                st.error(f"**Error Statement:** {msg}")
+                if stack_trace:
+                    st.markdown("**Root Cause / Stack Trace:**")
+                    st.code(stack_trace, language="text")
+
+    # 3. Top Errors & Top Warnings Frequency Breakdown
+    top_errors = report.get("top_errors") or []
+    top_warnings = report.get("top_warnings") or []
+    top_sources = report.get("top_sources") or []
+
+    if top_errors or top_warnings or top_sources:
+        st.markdown("#### 📊 Error & Warning Breakdown by Frequency")
+        tab_err, tab_warn, tab_src = st.tabs(["Top Errors", "Top Warnings", "Top Loggers"])
+
+        with tab_err:
+            if top_errors:
+                err_df_data = [{"Occurrences": e.get("count", 0), "Error Statement": e.get("message", "")} for e in top_errors]
+                st.dataframe(pd.DataFrame(err_df_data), **get_stretch_kwarg(st.dataframe))
+            else:
+                st.write("No errors recorded.")
+
+        with tab_warn:
+            if top_warnings:
+                warn_df_data = [{"Occurrences": w.get("count", 0), "Warning Statement": w.get("message", "")} for w in top_warnings]
+                st.dataframe(pd.DataFrame(warn_df_data), **get_stretch_kwarg(st.dataframe))
+            else:
+                st.write("No warnings recorded.")
+
+        with tab_src:
+            if top_sources:
+                src_df_data = [{"Occurrences": s.get("count", 0), "Logger Source": s.get("logger", "")} for s in top_sources]
+                st.dataframe(pd.DataFrame(src_df_data), **get_stretch_kwarg(st.dataframe))
+            else:
+                st.write("No logger sources recorded.")
+
+    # 4. Ingestion Time Window
+    time_range = report.get("time_range") or {}
+    if time_range:
+        st.caption(f"**Time Window:** First log event at `{time_range.get('first', '—')}` | Last log event at `{time_range.get('last', '—')}`")
+
+    # 5. Full Ingestion Document
+    with st.expander("📄 View Complete Raw Ingestion Document (JSON)", expanded=False):
+        st.json(record)
 
 
 # ==============================================================================
