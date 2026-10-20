@@ -1,57 +1,43 @@
-"""
-<<<<<<< HEAD
-S3 / MinIO Object Storage Client.
-Handles file uploads, rollbacks, and automatic bucket verification using boto3.
-"""
-
-import logging
-from typing import BinaryIO, Optional
+import os
 import boto3
+<<<<<<< HEAD
 from botocore.config import Config
 =======
-Amazon S3 storage client: stores the raw uploaded log files.
-The bucket is created by infrastructure (see README / template.yaml), not by application code.
-"""
-
-import logging
-from functools import lru_cache
-from typing import BinaryIO, Optional
-
-import boto3
 >>>>>>> aws-cloud
-from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import Depends
-
-from app.config import Settings, get_settings
-
-logger = logging.getLogger(__name__)
-
-
-class StorageUnavailableError(Exception):
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    EndpointConnectionError,
+    ConnectTimeoutError,
+    ReadTimeoutError,
+)
 <<<<<<< HEAD
-    """Raised when S3 / MinIO storage operations fail due to infrastructure/connection issues."""
-    pass
+from dotenv import load_dotenv
+
+from errors import ObjectNotFoundError, StorageUnavailableError
+
+load_dotenv()
 
 
-class StorageClient:
+class ObjectStorageClient:
     """
-    Client for interacting with S3-compatible object storage (MinIO).
-    Uses path-style addressing and ensures target bucket availability.
+    S3 / MinIO storage client for managing object downloads and uploads.
+    Configured from .env using boto3 with path-style addressing.
     """
 
     def __init__(
         self,
-        endpoint_url: str = "http://localhost:9000",
-        access_key: str = "minioadmin",
-        secret_key: str = "minioadmin",
-        bucket_name: str = "raw-logs",
-        region: str = "us-east-1",
+        endpoint_url: str | None = None,
+        access_key: str | None = None,
+        secret_key: str | None = None,
+        bucket_name: str | None = None,
+        region: str | None = None,
     ):
-        self.endpoint_url = endpoint_url
-        self.access_key = access_key
-        self.secret_key = secret_key
-        self.bucket_name = bucket_name
-        self.region = region
+        self.endpoint_url = endpoint_url or os.getenv("S3_ENDPOINT_URL", "http://localhost:9000")
+        self.access_key = access_key or os.getenv("S3_ACCESS_KEY", "minioadmin")
+        self.secret_key = secret_key or os.getenv("S3_SECRET_KEY", "minioadmin")
+        self.bucket_name = bucket_name or os.getenv("S3_BUCKET_NAME", "raw-logs")
+        self.region = region or os.getenv("S3_REGION", "us-east-1")
 
         s3_config = Config(s3={"addressing_style": "path"})
         try:
@@ -63,9 +49,25 @@ class StorageClient:
                 region_name=self.region,
                 config=s3_config,
             )
+=======
+from errors import ObjectNotFoundError, StorageUnavailableError
+
+
+class ObjectStorageClient:
+    """
+    Amazon S3 client used by the worker to download raw log files.
+    Credentials come from the Lambda execution role (no access keys in code).
+    """
+
+    def __init__(self, bucket_name: str | None = None, region: str | None = None, endpoint_url: str | None = None):
+        self.bucket_name = bucket_name or os.getenv("S3_BUCKET_NAME", "async-log-audit-bucket-nikeshala")
+        self.region = region or os.getenv("AWS_REGION", "us-east-1")
+        self.endpoint_url = endpoint_url or os.getenv("S3_ENDPOINT_URL") or None
+        try:
+            self.s3_client = boto3.client("s3", region_name=self.region, endpoint_url=self.endpoint_url)
+>>>>>>> aws-cloud
         except Exception as e:
-            logger.error("Failed to initialize S3 client: %s", e)
-            raise StorageUnavailableError(f"Storage client initialization error: {e}") from e
+            raise StorageUnavailableError(f"Failed to initialize S3 client: {e}") from e
 
     def ensure_bucket_exists(self) -> None:
         """
@@ -77,7 +79,6 @@ class StorageClient:
         except ClientError as e:
             error_code = str(e.response.get("Error", {}).get("Code", ""))
             if error_code in ("404", "NoSuchBucket", "NotFound"):
-                logger.info("Bucket '%s' does not exist. Creating...", self.bucket_name)
                 try:
                     if self.region == "us-east-1":
                         self.s3_client.create_bucket(Bucket=self.bucket_name)
@@ -86,102 +87,65 @@ class StorageClient:
                             Bucket=self.bucket_name,
                             CreateBucketConfiguration={"LocationConstraint": self.region},
                         )
-                    logger.info("Bucket '%s' created successfully.", self.bucket_name)
                 except ClientError as create_err:
                     create_code = str(create_err.response.get("Error", {}).get("Code", ""))
-                    if create_code in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
-                        logger.info("Bucket '%s' already exists.", self.bucket_name)
-                    else:
-                        logger.error("Failed to create bucket '%s': %s", self.bucket_name, create_err)
+                    if create_code not in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
                         raise StorageUnavailableError(f"Failed to create bucket: {create_err}") from create_err
-            elif error_code in ("403", "BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
-                logger.info("Bucket '%s' already exists.", self.bucket_name)
-            else:
-                logger.error("Error inspecting bucket '%s': %s", self.bucket_name, e)
+            elif error_code not in ("403", "BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
                 raise StorageUnavailableError(f"Error accessing bucket: {e}") from e
         except (BotoCoreError, Exception) as e:
-            logger.error("S3 connection error checking bucket: %s", e)
             raise StorageUnavailableError(f"Storage service unavailable: {e}") from e
 
-    def upload_fileobj(self, fileobj: BinaryIO, object_key: str) -> None:
+    def download_file(self, object_key: str, dest_path: str) -> None:
         """
-        Uploads a stream/file-like object to object storage.
-        Ensures bucket exists before uploading.
+        Downloads a file from object storage directly to disk without loading it into memory.
+        """
+        try:
+            dest_dir = os.path.dirname(dest_path)
+            if dest_dir:
+                os.makedirs(dest_dir, exist_ok=True)
+
+            self.s3_client.download_file(self.bucket_name, object_key, dest_path)
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code in ("404", "NoSuchKey", "NotFound"):
+                raise ObjectNotFoundError(
+                    f"Object '{object_key}' not found in bucket '{self.bucket_name}'."
+                ) from e
+            elif error_code and str(error_code).startswith("5"):
+                raise StorageUnavailableError(
+                    f"Storage server error ({error_code}) while downloading '{object_key}': {e}"
+                ) from e
+            else:
+                raise StorageUnavailableError(
+                    f"S3 client error downloading '{object_key}': {e}"
+                ) from e
+        except (BotoCoreError, EndpointConnectionError, ConnectTimeoutError, ReadTimeoutError) as e:
+            raise StorageUnavailableError(
+                f"Storage service unavailable while downloading '{object_key}': {e}"
+            ) from e
+        except Exception as e:
+            raise StorageUnavailableError(
+                f"Unexpected error downloading '{object_key}': {e}"
+            ) from e
+
+    def upload_file(self, file_path: str, object_key: str) -> None:
+        """
+        Uploads a local file to object storage. Ensures bucket exists first.
         """
         self.ensure_bucket_exists()
         try:
-            self.s3_client.upload_fileobj(fileobj, self.bucket_name, object_key)
+            self.s3_client.upload_file(file_path, self.bucket_name, object_key)
         except ClientError as e:
-            logger.error("S3 client error uploading '%s': %s", object_key, e)
-            raise StorageUnavailableError(f"S3 upload error: {e}") from e
-        except (BotoCoreError, Exception) as e:
-            logger.error("Storage service error uploading '%s': %s", object_key, e)
-            raise StorageUnavailableError(f"Storage service unavailable: {e}") from e
-
-    def delete_file(self, object_key: str) -> None:
-        """
-        Deletes an object from storage. Used for best-effort rollback during upload failures.
-        """
-        try:
-            self.s3_client.delete_object(Bucket=self.bucket_name, Key=object_key)
-            logger.info("Cleaned up orphaned object '%s' from bucket '%s'.", object_key, self.bucket_name)
-=======
-    """Raised when S3 operations fail."""
-
-
-class StorageClient:
-    def __init__(self, bucket_name: str, region: str = "us-east-1", endpoint_url: Optional[str] = None):
-        self.bucket_name = bucket_name
-        self.region = region
-        try:
-            self.s3_client = boto3.client("s3", region_name=region, endpoint_url=endpoint_url)
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code and str(error_code).startswith("5"):
+                raise StorageUnavailableError(
+                    f"Storage server error ({error_code}) while uploading '{object_key}': {e}"
+                ) from e
+            raise StorageUnavailableError(f"S3 client error uploading '{object_key}': {e}") from e
+        except (BotoCoreError, EndpointConnectionError, ConnectTimeoutError, ReadTimeoutError) as e:
+            raise StorageUnavailableError(
+                f"Storage service unavailable while uploading '{object_key}': {e}"
+            ) from e
         except Exception as e:
-            raise StorageUnavailableError(f"Storage client initialization error: {e}") from e
-
-    def ensure_bucket_exists(self) -> None:
-        """Kept for interface compatibility; the bucket is provisioned outside the app."""
-        return None
-
-    def upload_fileobj(self, fileobj: BinaryIO, object_key: str) -> None:
-        try:
-            self.s3_client.upload_fileobj(
-                fileobj,
-                self.bucket_name,
-                object_key,
-                ExtraArgs={"ServerSideEncryption": "AES256"},
-            )
-        except (ClientError, BotoCoreError, Exception) as e:
-            logger.error("S3 error uploading '%s': %s", object_key, e)
-            raise StorageUnavailableError(f"S3 upload error: {e}") from e
-
-    def delete_file(self, object_key: str) -> None:
-        """Best-effort rollback when a later step (DB/queue) fails."""
-        try:
-            self.s3_client.delete_object(Bucket=self.bucket_name, Key=object_key)
-            logger.info("Cleaned up orphaned object '%s'.", object_key)
->>>>>>> aws-cloud
-        except Exception as e:
-            logger.warning("Failed to delete object '%s' during rollback: %s", object_key, e)
-
-
-<<<<<<< HEAD
-def get_storage_client(
-    settings: Settings = Depends(get_settings),
-) -> StorageClient:
-    """FastAPI dependency provider for StorageClient."""
-    return StorageClient(
-        endpoint_url=settings.S3_ENDPOINT_URL,
-        access_key=settings.S3_ACCESS_KEY,
-        secret_key=settings.S3_SECRET_KEY,
-        bucket_name=settings.S3_BUCKET_NAME,
-        region=settings.S3_REGION,
-    )
-=======
-@lru_cache(maxsize=4)
-def _build_storage_client(bucket: str, region: str, endpoint_url: Optional[str]) -> StorageClient:
-    return StorageClient(bucket_name=bucket, region=region, endpoint_url=endpoint_url)
-
-
-def get_storage_client(settings: Settings = Depends(get_settings)) -> StorageClient:
-    return _build_storage_client(settings.S3_BUCKET_NAME, settings.AWS_REGION, settings.S3_ENDPOINT_URL)
->>>>>>> aws-cloud
+            raise StorageUnavailableError(f"Unexpected error uploading '{object_key}': {e}") from e
